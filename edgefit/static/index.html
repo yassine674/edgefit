@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>edgefit</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="entete">
+    <div>
+      <h1>edgefit</h1>
+      <p class="machine" id="machine">Connexion…</p>
+    </div>
+    <span class="statut" id="statut" data-etat="attente">En attente</span>
+  </header>
+
+  <main>
+    <div class="alertes" id="alertes" hidden></div>
+
+    <h2 class="titre-section">Matériel</h2>
+    <section class="grille" id="grille" aria-live="polite"></section>
+
+    <section class="panneau compat" aria-labelledby="titre-compat">
+      <h2 id="titre-compat">Compatibilité</h2>
+      <p class="note">Avant de télécharger : est-ce que le modèle rentre dans la mémoire libre de cette carte, et sinon que faire ?
+        Fonctionne aussi pour un modèle pas encore téléchargé (seul l'en-tête du fichier est lu).</p>
+      <form id="form-compat" class="ligne-form compat-form">
+        <label class="sr-only" for="compat-modele">Modèle à vérifier</label>
+        <input id="compat-modele" list="modeles-installes" placeholder="ex. llama3.2:3b ou hf.co/…:Q4_K_M"
+               required autocomplete="off" spellcheck="false">
+        <datalist id="modeles-installes"></datalist>
+        <label class="champ-court">Contexte
+          <select id="compat-contexte"></select>
+        </label>
+        <label class="champ-court" title="Réglage global du serveur Ollama (variable OLLAMA_KV_CACHE_TYPE). Par défaut : f16.">Cache KV d'Ollama
+          <select id="compat-kv">
+            <option value="f16">f16 (défaut)</option>
+            <option value="q8_0">q8_0</option>
+            <option value="q4_0">q4_0</option>
+          </select>
+        </label>
+        <button type="submit" id="bouton-compat">Vérifier</button>
+      </form>
+      <div id="resultat-compat" aria-live="polite"></div>
+    </section>
+
+    <div class="panneaux">
+      <section class="panneau" aria-labelledby="titre-modeles">
+        <h2 id="titre-modeles">Modèles</h2>
+        <p class="note" id="etat-ollama">Vérification d'Ollama…</p>
+        <ul class="liste-modeles" id="liste-modeles"></ul>
+        <form id="form-telecharger" class="ligne-form">
+          <label class="sr-only" for="nom-telecharger">Modèle à télécharger</label>
+          <input id="nom-telecharger" placeholder="ex. qwen2.5:0.5b ou hf.co/…:Q4_K_M"
+                 required autocomplete="off" spellcheck="false">
+          <button type="submit" id="bouton-telecharger">Télécharger</button>
+        </form>
+        <div id="progression" hidden>
+          <progress id="barre" max="1" value="0"></progress>
+          <p class="note" id="texte-progression"></p>
+        </div>
+      </section>
+
+      <section class="panneau panneau-chat" aria-labelledby="titre-chat">
+        <div class="entete-panneau">
+          <h2 id="titre-chat">Chat</h2>
+          <div class="choix-chat">
+            <label class="sr-only" for="choix-modele">Modèle utilisé</label>
+            <select id="choix-modele"></select>
+            <label class="sr-only" for="choix-contexte">Contexte (tokens)</label>
+            <select id="choix-contexte" title="Contexte envoyé à Ollama (num_ctx) : fixe la taille du cache KV réservé"></select>
+          </div>
+        </div>
+        <div class="conversation" id="conversation" aria-live="polite">
+          <p class="note vide" id="conversation-vide">Choisissez un modèle et envoyez un message : les mesures (TTFT, débit) s'affichent sous chaque réponse.</p>
+        </div>
+        <form id="form-chat" class="ligne-form">
+          <label class="sr-only" for="question">Votre message</label>
+          <textarea id="question" rows="2" placeholder="Votre message… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)" required></textarea>
+          <button type="submit" id="envoyer">Envoyer</button>
+        </form>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

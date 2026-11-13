@@ -1,0 +1,160 @@
+# `edgefit diagnostic` : vérifie que la carte est prête, avant même d'ouvrir le tableau de bord.
+# Chaque vérification renvoie (niveau, message) ; niveaux : OK, INFO, ATTENTION, ERREUR.
+# Rien n'est modifié sur la machine : le diagnostic propose les commandes, il ne les lance pas.
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import httpx
+import psutil
+
+from .metriques import detecter_fournisseur, modele_carte
+from .metriques.generique import bureau_actif
+from .metriques.jetson import analyser_ligne_tegrastats
+
+GIO = 1024 ** 3
+
+# numéro de version L4T (Linux for Tegra) -> version de JetPack
+JETPACK = {"32": "4 (Ubuntu 18.04)", "35": "5 (Ubuntu 20.04)", "36": "6 (Ubuntu 22.04)", "38": "7 (Ubuntu 24.04)"}
+
+
+def version_l4t(texte):
+    """ "# R36 (release), REVISION: 4.3, ..." -> ("36", "4.3")."""
+    m = re.search(r"R(\d+) \(release\), REVISION: ([\d.]+)", texte or "")
+    return (m.group(1), m.group(2)) if m else None
+
+
+def mode_energie(texte):
+    """sortie de `nvpmodel -q` -> nom du mode ("MAXN", "15W"...)."""
+    m = re.search(r"NV Power Mode:\s*(\S+)", texte or "")
+    return m.group(1) if m else None
+
+
+def _commande(args, delai=5):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=delai).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def verifier_python():
+    v = sys.version_info
+    return [("OK", f"Python {v.major}.{v.minor}")]
+
+
+def verifier_carte():
+    carte = modele_carte()
+    resultats = [("INFO", f"Carte : {carte or 'non détectée (PC ordinaire ?)'}")]
+    release = Path("/etc/nv_tegra_release")
+    if release.exists():
+        l4t = version_l4t(release.read_text(errors="ignore"))
+        if l4t:
+            jetpack = JETPACK.get(l4t[0], "inconnue")
+            niveau = "ATTENTION" if l4t[0] == "32" else "OK"
+            resultats.append((niveau, f"L4T R{l4t[0]}.{l4t[1]}, JetPack {jetpack}"
+                              + (" : trop ancien pour qu'Ollama utilise le GPU" if niveau == "ATTENTION" else "")))
+        mode = mode_energie(_commande(["nvpmodel", "-q"]))
+        if mode:
+            resultats.append(("INFO", f"Mode d'énergie : {mode} (il change les tokens/s ; liste : sudo nvpmodel -p --verbose)"))
+    if carte and "jetson" in carte.lower():
+        if not shutil.which("tegrastats"):
+            resultats.append(("ATTENTION", "tegrastats introuvable : GPU, températures et puissance ne seront pas affichés"))
+        else:
+            ligne = _commande(["timeout", "2", "tegrastats", "--interval", "500"]) or ""
+            lues = {k: v for k, v in analyser_ligne_tegrastats(ligne.splitlines()[0] if ligne else "").items()
+                    if v is not None}
+            absentes = {"gpu_pct", "temp_cpu_c", "temp_gpu_c", "puissance_w"} - lues.keys()
+            if absentes:
+                resultats.append(("ATTENTION", "tegrastats lu, mais champs absents : " + ", ".join(sorted(absentes))
+                                  + ". Envoyez la ligne de `tegrastats` pour adapter l'analyse."))
+            else:
+                resultats.append(("OK", "tegrastats : GPU, températures et puissance lus"))
+    if carte and "raspberry pi" in carte.lower():
+        sortie = _commande(["vcgencmd", "get_throttled"])
+        if sortie and "=0x0" not in sortie:
+            resultats.append(("ATTENTION", f"Raspberry Pi bridé ou sous-alimenté ({sortie.strip()}) : "
+                                           "utilisez l'alimentation officielle 27 W"))
+        elif sortie:
+            resultats.append(("OK", "Alimentation du Raspberry Pi correcte"))
+    return resultats
+
+
+def verifier_memoire():
+    ram, swap = psutil.virtual_memory(), psutil.swap_memory()
+    resultats = [("INFO", f"Mémoire : {ram.available / GIO:.1f} Go libres sur {ram.total / GIO:.1f} Go "
+                          f"(swap {swap.total / GIO:.1f} Go, inutilisable par le GPU)")]
+    carte = (modele_carte() or "").lower()
+    if bureau_actif() and ("jetson" in carte or "raspberry pi" in carte):
+        resultats.append(("INFO", "Bureau graphique actif : sans lui, ~0,5 à 1 Go de plus pour les modèles "
+                                  "(sudo systemctl set-default multi-user.target, puis redémarrer)"))
+    return resultats
+
+
+def _dossier_modeles():
+    return Path(os.environ.get("OLLAMA_MODELS") or Path.home() / ".ollama" / "models")
+
+
+def verifier_ollama(url):
+    try:
+        version = httpx.get(f"{url}/api/version", timeout=3).json()["version"]
+    except (httpx.HTTPError, ValueError, KeyError):
+        return [("ERREUR", f"Ollama ne répond pas sur {url}. Installation : curl -fsSL https://ollama.com/install.sh | sh")]
+    resultats = [("OK", f"Ollama {version} sur {url}")]
+
+    # le port d'Ollama ne doit pas être ouvert au réseau : il n'a pas d'authentification
+    try:
+        expose = any(c.laddr.port == 11434 and c.laddr.ip in ("0.0.0.0", "::") and c.status == psutil.CONN_LISTEN
+                     for c in psutil.net_connections("inet"))
+    except (psutil.Error, OSError):
+        expose = False
+    if expose:
+        resultats.append(("ATTENTION", "Ollama écoute sur toutes les interfaces (OLLAMA_HOST=0.0.0.0) : n'importe qui "
+                                       "sur le réseau peut l'utiliser. Retirez OLLAMA_HOST (sudo systemctl edit ollama)."))
+
+    try:
+        charges = httpx.get(f"{url}/api/ps", timeout=3).json().get("models", [])
+    except (httpx.HTTPError, ValueError):
+        charges = []
+    for m in charges:
+        part = m.get("size_vram", 0) / m["size"] if m.get("size") else 0
+        if part < 0.99:
+            resultats.append(("ATTENTION", f"{m['name']} n'est qu'à {part:.0%} sur le GPU : Ollama tourne en partie sur le CPU "
+                                           "(version d'Ollama ou de JetPack non prise en charge ?)"))
+        else:
+            resultats.append(("OK", f"{m['name']} chargé à 100 % sur le GPU"))
+    if not charges:
+        resultats.append(("INFO", "Aucun modèle chargé : lancez une question dans le chat puis relancez le diagnostic "
+                                  "pour vérifier qu'Ollama utilise bien le GPU"))
+
+    dossier = _dossier_modeles()
+    if dossier.exists():
+        libre = shutil.disk_usage(dossier).free / GIO
+        niveau = "ATTENTION" if libre < 10 else "OK"
+        resultats.append((niveau, f"{libre:.0f} Go libres pour les modèles ({dossier})"))
+    return resultats
+
+
+def verifier_internet():
+    try:
+        httpx.get("https://registry.ollama.ai/v2/", timeout=5)
+        return [("OK", "Registre Ollama joignable (téléchargements et vérification avant téléchargement)")]
+    except httpx.HTTPError:
+        return [("ATTENTION", "Pas d'accès au registre Ollama : seuls les modèles déjà installés seront utilisables")]
+
+
+def lancer(url_ollama):
+    print("edgefit — diagnostic de la machine\n")
+    erreurs = 0
+    for titre, verification in (("Système", verifier_python), ("Carte", verifier_carte), ("Mémoire", verifier_memoire),
+                                ("Ollama", lambda: verifier_ollama(url_ollama)), ("Réseau", verifier_internet)):
+        print(titre)
+        for niveau, message in verification():
+            erreurs += niveau == "ERREUR"
+            print(f"  [{niveau}] {message}")
+        print()
+    fournisseur = detecter_fournisseur()
+    print(f"Métriques lues par : {type(fournisseur).__name__}")
+    return 1 if erreurs else 0

@@ -1,0 +1,30 @@
+[project]
+name = "edgefit"
+version = "0.1.0"
+description = "Tableau de bord local pour faire tourner et mesurer des LLM sur Jetson et Raspberry Pi"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "websockets",
+    "psutil",
+    "httpx",
+    # calcul mémoire (poids, cache KV) partagé avec l'outil du stage, version figée par un tag
+    "llm-modelfit @ git+https://github.com/yassine674/llm-modelfit.git@v0.2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+edgefit = "edgefit.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["edgefit*"]
+
+[tool.setuptools.package-data]
+"edgefit" = ["static/*"]
