@@ -9,6 +9,7 @@ dependencies = [
     "websockets",
     "psutil",
     "httpx",
+    "platformdirs",
     # calcul mémoire (poids, cache KV) partagé avec l'outil du stage, version figée par un tag
     "llm-modelfit @ git+https://github.com/yassine674/llm-modelfit.git@v0.2.0",
 ]
@@ -27,4 +28,4 @@ build-backend = "setuptools.build_meta"
 include = ["edgefit*"]
 
 [tool.setuptools.package-data]
-"edgefit" = ["static/*"]
+"edgefit" = ["static/*", "donnees/*.json"]

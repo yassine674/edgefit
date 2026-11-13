@@ -7,6 +7,7 @@ import uvicorn
 from .metriques import detecter_fournisseur
 from .ollama import ClientOllama
 from .ollama_factice import OllamaFactice
+from .catalogue import Catalogue, CatalogueFactice
 from .registre import Registre, RegistreFactice
 from .securite import nouveau_jeton
 from .serveur import creer_app
@@ -46,7 +47,9 @@ def main():
     fournisseur = detecter_fournisseur(fake=args.fake)
     ollama = OllamaFactice() if args.fake else ClientOllama(args.ollama)
     jeton = nouveau_jeton()
-    app = creer_app(fournisseur, ollama, jeton, RegistreFactice() if args.fake else Registre())
+    app = creer_app(fournisseur, ollama, jeton,
+                    RegistreFactice() if args.fake else Registre(),
+                    CatalogueFactice() if args.fake else Catalogue())
 
     print(f"edgefit — machine : {fournisseur.machine}")
     print("Ollama simulé (--fake)" if args.fake else etat_ollama(args.ollama))

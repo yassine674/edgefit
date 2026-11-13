@@ -158,3 +158,67 @@ def lancer(url_ollama):
     fournisseur = detecter_fournisseur()
     print(f"Métriques lues par : {type(fournisseur).__name__}")
     return 1 if erreurs else 0
+
+
+# --- même diagnostic pour la page web : des codes et des valeurs, la page écrit les phrases ---
+
+def etat_carte(url_ollama):
+    """Identité de la carte et vérifications, sous forme de données (traduites par la page)."""
+    carte = modele_carte()
+    faits = {"carte": carte, "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+             "demarrage": psutil.boot_time(), "l4t": None, "jetpack": None, "mode": None,
+             "ollama_version": None, "ollama_url": url_ollama}
+    verifs = []
+
+    def ajout(niveau, code, **params):
+        verifs.append({"niveau": niveau, "code": code, "params": params})
+
+    release = Path("/etc/nv_tegra_release")
+    if release.exists():
+        l4t = version_l4t(release.read_text(errors="ignore"))
+        if l4t:
+            faits["l4t"], faits["jetpack"] = f"R{l4t[0]}.{l4t[1]}", JETPACK.get(l4t[0])
+            ajout("ATTENTION" if l4t[0] == "32" else "OK", "jetpack_ancien" if l4t[0] == "32" else "jetpack",
+                  l4t=faits["l4t"], jetpack=faits["jetpack"])
+        faits["mode"] = mode_energie(_commande(["nvpmodel", "-q"]))
+    carte_min = (carte or "").lower()
+    if "jetson" in carte_min:
+        ajout("OK" if shutil.which("tegrastats") else "ATTENTION", "tegrastats" if shutil.which("tegrastats") else "tegrastats_absent")
+    if "raspberry pi" in carte_min:
+        sortie = _commande(["vcgencmd", "get_throttled"])
+        if sortie:
+            ajout("OK" if "=0x0" in sortie else "ATTENTION", "pi_ok" if "=0x0" in sortie else "pi_bride", valeur=sortie.strip())
+    try:
+        faits["ollama_version"] = httpx.get(f"{url_ollama}/api/version", timeout=3).json()["version"]
+        ajout("OK", "ollama", version=faits["ollama_version"])
+    except (httpx.HTTPError, ValueError, KeyError):
+        ajout("ERREUR", "ollama_absent", url=url_ollama)
+    try:
+        if any(c.laddr.port == 11434 and c.laddr.ip in ("0.0.0.0", "::") and c.status == psutil.CONN_LISTEN
+               for c in psutil.net_connections("inet")):
+            ajout("ATTENTION", "ollama_expose")
+    except (psutil.Error, OSError):
+        pass
+    if faits["ollama_version"]:
+        try:
+            for m in httpx.get(f"{url_ollama}/api/ps", timeout=3).json().get("models", []):
+                part = m.get("size_vram", 0) / m["size"] if m.get("size") else 0
+                if "jetson" in carte_min or part:
+                    ajout("OK" if part >= 0.99 else "ATTENTION", "gpu_ok" if part >= 0.99 else "gpu_partiel",
+                          nom=m["name"], part=round(part * 100))
+        except (httpx.HTTPError, ValueError):
+            pass
+    dossier = _dossier_modeles()
+    if not dossier.exists():
+        dossier = Path.home()
+    disque = shutil.disk_usage(dossier)
+    faits.update(dossier=str(dossier), disque_libre_go=disque.free / GIO, disque_total_go=disque.total / GIO)
+    ajout("ATTENTION" if disque.free / GIO < 10 else "OK", "disque", libre_go=round(disque.free / GIO, 1))
+    if bureau_actif() and ("jetson" in carte_min or "raspberry pi" in carte_min):
+        ajout("INFO", "bureau")
+    try:
+        httpx.get("https://registry.ollama.ai/v2/", timeout=4)
+        ajout("OK", "internet")
+    except httpx.HTTPError:
+        ajout("ATTENTION", "internet_absent")
+    return {"faits": faits, "verifications": verifs}

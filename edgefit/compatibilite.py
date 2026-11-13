@@ -55,9 +55,12 @@ def cache_kv_octets(arch, num_ctx, type_kv="f16", parallele=1):
 
 
 def estimer(arch, poids_octets, num_ctx, type_kv="f16", parallele=1):
+    # modèle "vision" : le projecteur (image -> tokens) est chargé avec le modèle, quelle
+    # que soit la quantification choisie pour les poids
+    poids = poids_octets + arch.get("projecteur_octets", 0)
     kv = cache_kv_octets(arch, num_ctx, type_kv, parallele)
-    buffers = memoire_buffers(poids_octets, kv)
-    return {"poids": poids_octets, "cache_kv": kv, "buffers": buffers, "total": poids_octets + kv + buffers}
+    buffers = memoire_buffers(poids, kv)
+    return {"poids": poids, "cache_kv": kv, "buffers": buffers, "total": poids + kv + buffers}
 
 
 def marge_securite(type_carte, totale):
@@ -83,6 +86,14 @@ def _verdict(total, b):
     if total <= b["utilisable"]:
         return "ok_apres_dechargement"
     return "trop_gros"
+
+
+def verdict_rapide(arch, poids_octets, b, num_ctx, type_kv="f16", parallele=1, bande_passante=None):
+    """Verdict seul, sans la recherche de réglages : pour afficher d'un coup tout un catalogue."""
+    e = estimer(arch, poids_octets, num_ctx, type_kv, parallele)
+    return {"verdict": _verdict(e["total"], b), "total_go": e["total"] / GIO, "poids_go": e["poids"] / GIO,
+            "cache_kv_go": e["cache_kv"] / GIO, "reste_go": (b["utilisable"] - e["total"]) / GIO,
+            "plafond_tokens_s": bande_passante * 1e9 / e["poids"] if bande_passante else None}
 
 
 def nb_param_estime(arch, poids_octets, format_actuel):
@@ -190,50 +201,44 @@ def piles(combinaisons, demande, b, bande_passante=None, type_kv_actuel="f16"):
 # --- solutions classées par catégorie -------------------------------------------------
 
 def commande_kv(type_kv):
-    return ("sudo systemctl edit ollama\n"
-            "# ajouter dans la zone indiquée :\n"
-            "[Service]\n"
-            'Environment="OLLAMA_FLASH_ATTENTION=1"\n'
-            f'Environment="OLLAMA_KV_CACHE_TYPE={type_kv}"\n'
-            "# puis :\n"
-            "sudo systemctl restart ollama")
+    """Réglage global d'Ollama en trois temps : ouvrir l'éditeur du service, y coller les lignes, redémarrer."""
+    return {"ouvrir": "sudo systemctl edit ollama",
+            "contenu": f'[Service]\nEnvironment="OLLAMA_FLASH_ATTENTION=1"\nEnvironment="OLLAMA_KV_CACHE_TYPE={type_kv}"',
+            "apres": "sudo systemctl restart ollama"}
 
 
-PETITS_MODELES = [  # (nom dans la bibliothèque Ollama, nombre de paramètres)
-    ("gemma3:4b", 4.3e9), ("llama3.2:3b", 3.21e9), ("qwen2.5:3b", 3.09e9), ("qwen2.5:1.5b", 1.54e9),
-    ("llama3.2:1b", 1.24e9), ("gemma3:1b", 1.0e9), ("qwen2.5:0.5b", 0.49e9),
-]
+def petits_modeles(n, limite=3):
+    """Modèles suggérés nettement plus petits que n paramètres, du plus grand au plus petit (tailles exactes)."""
+    from .catalogue import SUGGESTIONS
+    from .registre import parametres_depuis_texte
+    choix = [(parametres_depuis_texte(e["parametres"]) or 0, e) for e in SUGGESTIONS]
+    choix = [(p, e) for p, e in choix if 0 < p < 0.8 * n]
+    choix.sort(key=lambda pe: pe[0], reverse=True)
+    return [{"nom": e["nom"], "parametres_mds": p / 1e9, "taille_go": (e["taille_octets"] + e["projecteur_octets"]) / GIO}
+            for p, e in choix[:limite]]
 
-POUR_INFORMATION = [
-    ("Quantification GPTQ ou AWQ",
-     "Quantifications calibrées sur des données, souvent un peu plus fidèles que le GGUF à taille égale. "
-     "Utilisées par vLLM ou TensorRT-LLM, pas par Ollama."),
-    ("TensorRT-LLM ou MLC-LLM sur Jetson",
-     "Moteurs optimisés pour les GPU NVIDIA, souvent plus rapides qu'Ollama, mais les modèles doivent être convertis."),
-    ("PagedAttention (vLLM)",
-     "Réserve le cache KV par petits blocs au fil de la conversation au lieu de tout le contexte dès le chargement."),
-    ("Décodage spéculatif",
-     "Un petit modèle propose plusieurs tokens, le grand les vérifie d'un coup : plus rapide, mais les deux modèles occupent la mémoire."),
-]
+
+# pistes hors d'Ollama, pour information : la page les décrit à partir de leur clé
+POUR_INFORMATION = ["gptq_awq", "tensorrt_mlc", "paged_attention", "speculatif"]
 
 
 def solutions(nom, arch, poids_octets, format_actuel, b, demande, type_kv_actuel="f16", parallele=1,
               type_carte="autre", bureau_actif=False):
-    """Pistes classées par catégorie, de la plus simple (un réglage) à la plus lourde (changer de carte)."""
+    """Pistes classées par catégorie, de la plus simple (un réglage) à la plus lourde (changer de carte).
+    Renvoie des données (type de piste et valeurs) : la page écrit les phrases dans la langue choisie."""
     actuel = estimer(arch, poids_octets, demande, type_kv_actuel, parallele)
     manque = actuel["total"] - b["utilisable"]
     categories = []
 
-    def ajouter(categorie, pistes):
+    def ajouter(cle, pistes):
         if pistes:
-            categories.append({"categorie": categorie, "pistes": pistes})
+            categories.append({"cle": cle, "pistes": pistes})
 
-    def piste(titre, detail, total=None, action=None, commande=None):
-        p = {"titre": titre, "detail": detail, "action": action, "commande": commande}
-        if total is not None:
-            p["gain_go"] = octets_vers_go(actuel["total"] - total)
-            p["rentre"] = total <= b["utilisable"]
-        return p
+    def avec_gain(piste, total):
+        piste["gain_go"] = octets_vers_go(actuel["total"] - total)
+        piste["total_go"] = octets_vers_go(total)
+        piste["rentre"] = total <= b["utilisable"]
+        return piste
 
     # 1. réglage de la requête : immédiat, rien à télécharger
     pistes = []
@@ -241,66 +246,44 @@ def solutions(nom, arch, poids_octets, format_actuel, b, demande, type_kv_actuel
         if ctx < demande:
             e = estimer(arch, poids_octets, ctx, type_kv_actuel, parallele)
             if e["total"] <= b["utilisable"]:
-                pistes.append(piste(f"Réduire le contexte à {ctx} tokens",
-                                    "Le cache KV est réservé pour tout le contexte : moins de contexte, moins de mémoire. "
-                                    "La conversation sera oubliée plus tôt.",
-                                    e["total"], {"type": "contexte", "valeur": ctx}))
+                pistes.append(avec_gain({"type": "contexte", "valeur": ctx}, e["total"]))
                 break
     if type_carte == "jetson":
-        pistes.append(piste("Pourquoi pas de déport sur le CPU (num_gpu) ?",
-                            "Sur une Jetson, le CPU et le GPU partagent la même mémoire : déplacer des couches "
-                            "vers le CPU ne libère rien, et ralentit."))
-    ajouter("Réglage de la requête (immédiat)", pistes)
+        pistes.append({"type": "num_gpu"})  # explication : la mémoire unifiée ne gagne rien au déport
+    ajouter("requete", pistes)
 
     # 2. réglage du serveur Ollama : vaut pour tous les modèles, demande un redémarrage
     pistes = []
     for kv in ("q8_0", "q4_0"):
         if QUALITE_KV[kv] < QUALITE_KV[type_kv_actuel]:
             e = estimer(arch, poids_octets, demande, kv, parallele)
-            perte = "perte de qualité quasi nulle" if kv == "q8_0" else "perte de qualité plus visible sur les longs contextes"
-            pistes.append(piste(f"Quantifier le cache KV en {kv}",
-                                f"Réglage global d'Ollama (demande Flash Attention), {perte}.",
-                                e["total"], commande=commande_kv(kv)))
+            pistes.append(avec_gain({"type": "cache_kv", "valeur": kv, "commande": commande_kv(kv)}, e["total"]))
     if parallele > 1:
         e = estimer(arch, poids_octets, demande, type_kv_actuel, 1)
-        pistes.append(piste("Une seule requête à la fois (OLLAMA_NUM_PARALLEL=1)",
-                            f"Ollama réserve actuellement {parallele} caches KV complets.", e["total"]))
-    ajouter("Réglage du serveur Ollama (redémarrage)", pistes)
+        pistes.append(avec_gain({"type": "parallele", "valeur": parallele}, e["total"]))
+    ajouter("serveur", pistes)
 
     # 3. autre quantification : un autre fichier à télécharger
     pistes = []
     for c in candidats(nom, arch, poids_octets, format_actuel)[1:]:
         if c["poids"] < poids_octets:
             e = estimer(arch, c["poids"], demande, type_kv_actuel, parallele)
-            nom_c = c["nom"]
-            detail = (f"~{c['bits']:.1f} bits par poids, environ {octets_vers_go(c['poids']):.1f} Go à télécharger (estimé). "
-                      + ("" if nom_c else "Cherchez le tag correspondant dans la page « Tags » du modèle sur ollama.com."))
-            pistes.append(piste(f"Variante {c['format']}", detail, e["total"],
-                                {"type": "telecharger", "valeur": nom_c} if nom_c else None))
-    ajouter("Autre quantification (téléchargement)", pistes)
+            pistes.append(avec_gain({"type": "variante", "format": c["format"], "bits": c["bits"],
+                                     "taille_go": octets_vers_go(c["poids"]), "nom": c["nom"]}, e["total"]))
+    ajouter("quantification", pistes)
 
     # 4. libérer de la mémoire sur la carte
     pistes = []
     if b["liberable"]:
-        pistes.append(piste("Modèles déjà chargés par Ollama",
-                            f"{octets_vers_go(b['liberable']):.1f} Go sont occupés par des modèles chargés ; "
-                            "Ollama les décharge pour faire de la place (déjà compté ci-dessus)."))
+        pistes.append({"type": "decharger", "liberable_go": octets_vers_go(b["liberable"])})
     if bureau_actif and type_carte in ("jetson", "raspberry"):
-        pistes.append(piste("Démarrer sans interface graphique",
-                            "Le bureau occupe souvent 0,5 à 1 Go. La carte reste pilotable depuis ce tableau de bord. "
-                            "Pour revenir au bureau : sudo systemctl set-default graphical.target",
-                            commande="sudo systemctl set-default multi-user.target\nsudo reboot"))
-    ajouter("Libérer de la mémoire", pistes)
+        pistes.append({"type": "bureau", "commande": "sudo systemctl set-default multi-user.target && sudo reboot",
+                       "retour": "sudo systemctl set-default graphical.target"})
+    ajouter("memoire", pistes)
 
-    # 5. autre modèle, plus petit
+    # 5. autre modèle, plus petit (tailles exactes de la liste de suggestions)
     n = nb_param_estime(arch, poids_octets, format_actuel)
-    pistes = []
-    for nom_petit, params in PETITS_MODELES:
-        if n and params < 0.8 * n and len(pistes) < 3:
-            pistes.append(piste(nom_petit, f"{params / 1e9:.1f} milliards de paramètres, "
-                                f"environ {params * BITS_PAR_POIDS['Q4_K_M'] / 8 / GIO:.1f} Go en Q4_K_M.",
-                                action={"type": "verifier", "valeur": nom_petit}))
-    ajouter("Autre modèle, plus petit", pistes)
+    ajouter("modele", [{"type": "petit_modele", **m} for m in petits_modeles(n)] if n else [])
 
     # 6. autre matériel : les plateformes de llm_modelfit (avec sa propre marge), seulement
     # celles qui ont plus de mémoire que cette carte (leur fiche suppose une carte vide)
@@ -308,10 +291,10 @@ def solutions(nom, arch, poids_octets, format_actuel, b, demande, type_kv_actuel
     compatibles = [p for p in charger_plateformes()
                    if p["memory_gb"] * 1e9 > 1.1 * b["totale"] and verifier_compat(total_go, p)["compatible"]]
     compatibles.sort(key=lambda p: p["memory_gb"])
-    ajouter("Autre matériel", [piste(p["name"], f"{p['memory_gb']:g} Go de mémoire, {p['power_watts']:g} W.")
-                               for p in compatibles[:4]])
+    ajouter("materiel", [{"type": "plateforme", "nom": p["name"], "memoire_go": p["memory_gb"], "watts": p["power_watts"]}
+                         for p in compatibles[:4]])
 
-    ajouter("Hors d'Ollama (pour information)", [piste(t, d) for t, d in POUR_INFORMATION])
+    ajouter("info", [{"type": "info", "cle": cle} for cle in POUR_INFORMATION])
     return {"manque_go": octets_vers_go(max(0, manque)), "categories": categories}
 
 

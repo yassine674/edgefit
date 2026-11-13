@@ -102,7 +102,7 @@ class ClientOllama:
         if r.status_code == 404:
             raise ModeleInconnu(r.json().get("error", "modèle introuvable"))
         r.raise_for_status()
-        return r.json()
+        return r.json() if r.content else {}
 
     async def version(self):
         return (await self._requete("GET", "/api/version"))["version"]
@@ -116,6 +116,7 @@ class ClientOllama:
                 "famille": m.get("details", {}).get("family"),
                 "parametres": m.get("details", {}).get("parameter_size"),
                 "quantification": m.get("details", {}).get("quantization_level"),
+                "modifie": m.get("modified_at"),
             }
             for m in donnees.get("models", [])
         ]
@@ -139,8 +140,15 @@ class ClientOllama:
         # (poids + cache KV + buffers), `size_vram` la part sur le GPU
         donnees = await self._requete("GET", "/api/ps")
         return [{"nom": m["name"], "taille": m.get("size", 0), "taille_vram": m.get("size_vram", 0),
-                 "num_ctx": m.get("context_length")}
+                 "num_ctx": m.get("context_length"), "expire": m.get("expires_at")}
                 for m in donnees.get("models", [])]
+
+    async def decharger(self, nom):
+        # keep_alive 0 : Ollama libère la mémoire du modèle tout de suite
+        await self._requete("POST", "/api/generate", json={"model": nom, "keep_alive": 0, "stream": False})
+
+    async def supprimer(self, nom):
+        await self._requete("DELETE", "/api/delete", json={"model": nom})
 
     async def _flux(self, chemin, corps):
         try:

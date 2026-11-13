@@ -80,7 +80,9 @@ def _faux_registre(requetes):
         chemin = requete.url.path
         if chemin.endswith("/manifests/3b"):
             return httpx.Response(200, json={"config": {"digest": "sha256:cfg"}, "layers": [
-                {"mediaType": "application/vnd.ollama.image.model", "digest": "sha256:mod", "size": 2_019_377_376}]})
+                {"mediaType": "application/vnd.ollama.image.model", "digest": "sha256:mod", "size": 2_019_377_376},
+                {"mediaType": "application/vnd.ollama.image.projector", "digest": "sha256:proj", "size": 851_251_104},
+                {"mediaType": "application/vnd.ollama.image.template", "digest": "sha256:tpl", "size": 1_000}]})
         if chemin.endswith("/blobs/sha256:cfg"):
             return httpx.Response(200, content=json.dumps(config).encode())
         if chemin.endswith("/blobs/sha256:mod"):
@@ -99,6 +101,25 @@ def test_registre_lit_taille_architecture_et_format_sans_tout_telecharger():
     assert lecture.headers["range"] == "bytes=0-1048575"  # le premier Mo seulement
     # le registre d'Ollama refuse les requêtes qui se présentent comme Ollama sans signature
     assert all("ollama" not in r.headers.get("user-agent", "") for r in requetes)
+
+
+def test_registre_compte_le_projecteur_des_modeles_vision():
+    infos = asyncio.run(Registre(transport=_faux_registre([])).infos("llama3.2:3b"))
+    assert infos["projecteur_octets"] == 851_251_104
+    assert infos["architecture"]["projecteur_octets"] == 851_251_104
+    assert infos["telechargement_octets"] == 2_019_377_376 + 851_251_104 + 1_000
+
+
+def test_registre_garde_les_reponses_en_cache():
+    requetes = []
+    registre = Registre(transport=_faux_registre(requetes))
+
+    async def deux_fois_en_meme_temps():
+        return await asyncio.gather(registre.infos("llama3.2:3b"), registre.infos("llama3.2:3b"))
+    a, b = asyncio.run(deux_fois_en_meme_temps())
+    n = len(requetes)
+    asyncio.run(registre.infos("llama3.2:3b"))
+    assert a == b and len(requetes) == n == 3  # manifeste + config + en-tête, une seule fois
 
 
 def test_registre_modele_introuvable():

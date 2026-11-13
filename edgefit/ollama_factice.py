@@ -21,6 +21,14 @@ ARCHITECTURES = {
 }
 
 
+def _architecture(nom):
+    if nom in ARCHITECTURES:
+        return ARCHITECTURES[nom]
+    from .catalogue import SUGGESTIONS
+    entree = next((e for e in SUGGESTIONS if e["nom"] == nom), None)
+    return entree["architecture"] if entree else ARCHITECTURES["qwen2.5:0.5b"]
+
+
 class OllamaFactice:
     url = "simulé (--fake)"
 
@@ -33,7 +41,7 @@ class OllamaFactice:
         return "simulé"
 
     async def modeles(self):
-        return list(self._installes)
+        return [{"modifie": "2026-11-10T09:30:00Z", **m} for m in self._installes]
 
     async def architecture(self, nom):
         if nom not in ARCHITECTURES:
@@ -45,7 +53,7 @@ class OllamaFactice:
         if modele is None:
             return None
         return {"taille_octets": int(modele["taille_go"] * 1024 ** 3),
-                "architecture": ARCHITECTURES.get(nom, ARCHITECTURES["qwen2.5:0.5b"]),
+                "architecture": _architecture(nom),
                 "format": modele["quantification"] or "Q4_K_M"}
 
     async def charges(self):
@@ -57,6 +65,16 @@ class OllamaFactice:
         taille = int(modele["taille_go"] * 1024 ** 3 * 1.08 + num_ctx * 30_000)
         return [{"nom": nom, "taille": taille, "taille_vram": taille, "num_ctx": num_ctx}]
 
+    async def decharger(self, nom):
+        if self._charge and self._charge[0] == nom:
+            self._charge = None
+
+    async def supprimer(self, nom):
+        if all(m["nom"] != nom for m in self._installes):
+            raise ModeleInconnu(f"model '{nom}' not found")
+        self._installes = [m for m in self._installes if m["nom"] != nom]
+        await self.decharger(nom)
+
     async def telecharger(self, nom):
         total = 400_000_000
         yield {"type": "progression", "statut": "pulling manifest", "fait": None, "total": None}
@@ -64,31 +82,40 @@ class OllamaFactice:
             await asyncio.sleep(self._pause)
             yield {"type": "progression", "statut": "pulling model", "fait": fait, "total": total}
         if all(m["nom"] != nom for m in self._installes):
-            self._installes.append({"nom": nom, "taille_go": total / 1024 ** 3, "famille": None,
-                                    "parametres": None, "quantification": None})
+            from .catalogue import SUGGESTIONS
+            entree = next((e for e in SUGGESTIONS if e["nom"] == nom), None)
+            taille = (entree["taille_octets"] + entree["projecteur_octets"]) if entree else total
+            self._installes.append({"nom": nom, "taille_go": taille / 1024 ** 3, "famille": entree and entree["famille"],
+                                    "parametres": entree and entree["parametres"],
+                                    "quantification": entree and entree["format"]})
         yield {"type": "fin"}
 
     async def discuter(self, nom, messages, options=None):
         if all(m["nom"] != nom for m in self._installes):
             yield {"type": "erreur", "erreur": f"model '{nom}' not found"}
             return
+        froid = self._charge is None or self._charge[0] != nom
         self._charge = (nom, (options or {}).get("num_ctx", 4096))
+        taille_go = next(m["taille_go"] for m in self._installes if m["nom"] == nom)
+        # vitesse simulée plausible : un modèle deux fois plus gros génère deux fois moins vite
+        debit = min(80.0, 25.0 / max(taille_go, 0.25))
         debut = time.perf_counter()
         question = messages[-1]["content"]
         reponse = (f"Réponse simulée (mode --fake) de {nom} à : « {question[:80]} ». "
                    "Les mesures affichées ci-dessous sont plausibles pour une Jetson, mais inventées.").split(" ")
+        if froid and self._pause:
+            await asyncio.sleep(0.8 + taille_go)  # chargement simulé, compris dans le premier mot comme en vrai
         await asyncio.sleep(self._pause * 5)  # prefill
         premier = time.perf_counter()
         for i, mot in enumerate(reponse):
             yield {"type": "token", "texte": mot if i == 0 else " " + mot}
             await asyncio.sleep(self._pause)
-        # durées annoncées fixes (~20 tokens/s), indépendantes du rythme d'affichage simulé
         tokens_prompt = 4 * len(question.split()) + 20
         fin = {
-            "load_duration": 0.8 * NS,
+            "load_duration": (0.8 + taille_go) * NS if froid else 0.01 * NS,
             "prompt_eval_count": tokens_prompt,
-            "prompt_eval_duration": tokens_prompt / 150 * NS,
+            "prompt_eval_duration": tokens_prompt / (6 * debit) * NS,
             "eval_count": len(reponse),
-            "eval_duration": len(reponse) * 0.05 * NS,
+            "eval_duration": len(reponse) / debit * NS,
         }
         yield {"type": "fin", "metriques": metriques_inference(fin, debut, premier, time.perf_counter())}

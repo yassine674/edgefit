@@ -8,6 +8,7 @@ from starlette.websockets import WebSocketDisconnect
 from edgefit.metriques import FournisseurFactice
 from edgefit.ollama import ClientOllama
 from edgefit.ollama_factice import OllamaFactice
+from edgefit.catalogue import CatalogueFactice
 from edgefit.registre import RegistreFactice
 from edgefit.securite import NOM_COOKIE, origine_autorisee
 from edgefit.serveur import creer_app
@@ -19,7 +20,7 @@ COOKIE = f"{NOM_COOKIE}={JETON}"
 @pytest.fixture
 def client():
     return TestClient(creer_app(FournisseurFactice(), OllamaFactice(pause_s=0), JETON, RegistreFactice(),
-                                intervalle_s=0.01))
+                                CatalogueFactice(), intervalle_s=0.01))
 
 
 @pytest.fixture
@@ -144,13 +145,13 @@ def test_compatibilite_modele_a_telecharger_trop_gros(connecte):
     d = connecte.post("/api/compatibilite", json={"modele": "llama3.1:8b", "num_ctx": 8192}).json()
     assert d["source"] == "registre"
     assert d["verdict"] == "trop_gros"
-    categories = [c["categorie"] for c in d["solutions"]["categories"]]
-    assert "Réglage du serveur Ollama (redémarrage)" in categories
-    assert "Autre modèle, plus petit" in categories
+    categories = [c["cle"] for c in d["solutions"]["categories"]]
+    assert "serveur" in categories and "modele" in categories
 
 
 def test_compatibilite_modele_inconnu_et_requetes_invalides(connecte):
-    assert connecte.post("/api/compatibilite", json={"modele": "inexistant:1b"}).status_code == 422
+    r = connecte.post("/api/compatibilite", json={"modele": "inexistant:1b"})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "introuvable"
     assert connecte.post("/api/compatibilite", json={"modele": "qwen2.5:0.5b", "num_ctx": 10}).status_code == 422
     assert connecte.post("/api/compatibilite", json={"modele": "qwen2.5:0.5b", "type_kv": "q2"}).status_code == 422
     assert connecte.post("/api/compatibilite", json={"modele": "a b"}).status_code == 422
@@ -163,3 +164,25 @@ def test_chat_envoie_le_contexte_et_rend_la_memoire_chargee(connecte):
     assert fin["type"] == "fin"
     # le faux Ollama calcule sa "mémoire chargée" à partir du num_ctx reçu
     assert fin["metriques"]["memoire_chargee_go"] > 0.37
+
+
+def test_recherche_installes_suggestions_et_hugging_face(connecte):
+    r = connecte.get("/api/recherche", params={"q": "llama"}).json()
+    assert [m["nom"] for m in r["installes"]] == ["llama3.2:3b"]
+    assert all(s["nom"] != "llama3.2:3b" for s in r["suggestions"])  # déjà installé : pas proposé deux fois
+    assert r["huggingface"][0]["depot"] == "bartowski/Llama-3.2-1B-Instruct-GGUF"
+
+
+def test_versions_d_un_depot_et_depot_invalide(connecte):
+    versions = connecte.get("/api/variantes", params={"depot": "bartowski/Llama-3.2-1B-Instruct-GGUF"}).json()
+    assert versions[0]["format"] == "Q3_K_M" and versions[-1]["format"] == "F16"
+    assert connecte.get("/api/variantes", params={"depot": "../x"}).status_code == 400
+    assert connecte.get("/api/variantes", params={"depot": "inconnu/x"}).status_code == 502
+
+
+def test_compatibilite_donne_telechargement_et_disque(connecte):
+    d = connecte.post("/api/compatibilite", json={"modele": "gemma3:4b", "num_ctx": 4096}).json()
+    assert d["projecteur_go"] > 0.7 and d["telechargement_go"] > d["taille_fichier_go"]
+    assert d["disque_libre_go"] > 0
+    installe = connecte.post("/api/compatibilite", json={"modele": "qwen2.5:0.5b"}).json()
+    assert installe["telechargement_go"] == 0

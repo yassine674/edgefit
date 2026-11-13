@@ -1,0 +1,597 @@
+[
+ {
+  "nom": "smollm2:135m",
+  "taille_octets": 270885952,
+  "projecteur_octets": 0,
+  "format": "F16",
+  "famille": "llama",
+  "parametres": "134.52M",
+  "description": "Minuscule : idéal pour tester l'installation",
+  "vision": false,
+  "architecture": {
+   "architecture": "llama",
+   "nb_param": 134520000,
+   "num_layers": 30,
+   "num_kv_heads": 3,
+   "head_dim": 64,
+   "context_max": 8192,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat"
+  ]
+ },
+ {
+  "nom": "smollm2:360m",
+  "taille_octets": 725553792,
+  "projecteur_octets": 0,
+  "format": "F16",
+  "famille": "llama",
+  "parametres": "361.82M",
+  "description": "Très petit modèle de démonstration",
+  "vision": false,
+  "architecture": {
+   "architecture": "llama",
+   "nb_param": 361820000,
+   "num_layers": 32,
+   "num_kv_heads": 5,
+   "head_dim": 64,
+   "context_max": 8192,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat"
+  ]
+ },
+ {
+  "nom": "gemma3:270m",
+  "taille_octets": 291545472,
+  "projecteur_octets": 0,
+  "format": "Q8_0",
+  "famille": "gemma3",
+  "parametres": "268.10M",
+  "description": "Le plus petit Gemma 3, réponses simples",
+  "vision": false,
+  "architecture": {
+   "architecture": "gemma3",
+   "nb_param": 268100000,
+   "num_layers": 18,
+   "num_kv_heads": 1,
+   "head_dim": 256,
+   "context_max": 32768,
+   "sliding_window": 512
+  },
+  "tags": [
+   "chat",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "qwen3:0.6b",
+  "taille_octets": 522640096,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "qwen3",
+  "parametres": "751.63M",
+  "description": "Petit Qwen 3, avec mode raisonnement",
+  "vision": false,
+  "architecture": {
+   "architecture": "qwen3",
+   "nb_param": 751630000,
+   "num_layers": 28,
+   "num_kv_heads": 8,
+   "head_dim": 128,
+   "context_max": 40960,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "raisonnement",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "qwen2.5:0.5b",
+  "taille_octets": 397807936,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "qwen2",
+  "parametres": "494.03M",
+  "description": "Très léger, bon premier essai",
+  "vision": false,
+  "architecture": {
+   "architecture": "qwen2",
+   "nb_param": 494030000,
+   "num_layers": 24,
+   "num_kv_heads": 2,
+   "head_dim": 64,
+   "context_max": 32768,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "tinyllama:1.1b",
+  "taille_octets": 637699456,
+  "projecteur_octets": 0,
+  "format": "Q4_0",
+  "famille": "llama",
+  "parametres": "1B",
+  "description": "Llama compact, ancien mais léger",
+  "vision": false,
+  "architecture": {
+   "architecture": "llama",
+   "nb_param": 1000000000,
+   "num_layers": 22,
+   "num_kv_heads": 4,
+   "head_dim": 64,
+   "context_max": 2048,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat"
+  ]
+ },
+ {
+  "nom": "gemma3:1b",
+  "taille_octets": 806058400,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "gemma3",
+  "parametres": "999.89M",
+  "description": "Gemma 3 compact, multilingue",
+  "vision": false,
+  "architecture": {
+   "architecture": "gemma3",
+   "nb_param": 999890000,
+   "num_layers": 26,
+   "num_kv_heads": 1,
+   "head_dim": 256,
+   "context_max": 32768,
+   "sliding_window": 512
+  },
+  "tags": [
+   "chat",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "llama3.2:1b",
+  "taille_octets": 1321082688,
+  "projecteur_octets": 0,
+  "format": "Q8_0",
+  "famille": "llama",
+  "parametres": "1.2B",
+  "description": "Petit Llama de Meta",
+  "vision": false,
+  "architecture": {
+   "architecture": "llama",
+   "nb_param": 1200000000,
+   "num_layers": 16,
+   "num_kv_heads": 8,
+   "head_dim": 64,
+   "context_max": 131072,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "deepseek-r1:1.5b",
+  "taille_octets": 1117320512,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "qwen2",
+  "parametres": "1.8B",
+  "description": "Raisonne pas à pas avant de répondre",
+  "vision": false,
+  "architecture": {
+   "architecture": "qwen2",
+   "nb_param": 1800000000,
+   "num_layers": 28,
+   "num_kv_heads": 2,
+   "head_dim": 128,
+   "context_max": 131072,
+   "sliding_window": null
+  },
+  "tags": [
+   "raisonnement"
+  ]
+ },
+ {
+  "nom": "qwen2.5:1.5b",
+  "taille_octets": 986048512,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "qwen2",
+  "parametres": "1.5B",
+  "description": "Bon compromis pour un Raspberry Pi",
+  "vision": false,
+  "architecture": {
+   "architecture": "qwen2",
+   "nb_param": 1500000000,
+   "num_layers": 28,
+   "num_kv_heads": 2,
+   "head_dim": 128,
+   "context_max": 32768,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "qwen2.5-coder:1.5b",
+  "taille_octets": 986048576,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "qwen2",
+  "parametres": "1.5B",
+  "description": "Spécialisé en code",
+  "vision": false,
+  "architecture": {
+   "architecture": "qwen2",
+   "nb_param": 1500000000,
+   "num_layers": 28,
+   "num_kv_heads": 2,
+   "head_dim": 128,
+   "context_max": 32768,
+   "sliding_window": null
+  },
+  "tags": [
+   "code"
+  ]
+ },
+ {
+  "nom": "qwen3:1.7b",
+  "taille_octets": 1359279776,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "qwen3",
+  "parametres": "2.0B",
+  "description": "Qwen 3, avec mode raisonnement",
+  "vision": false,
+  "architecture": {
+   "architecture": "qwen3",
+   "nb_param": 2000000000,
+   "num_layers": 28,
+   "num_kv_heads": 8,
+   "head_dim": 128,
+   "context_max": 40960,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "raisonnement",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "smollm2:1.7b",
+  "taille_octets": 1820414656,
+  "projecteur_octets": 0,
+  "format": "Q8_0",
+  "famille": "llama",
+  "parametres": "1.7B",
+  "description": "SmolLM2, version la plus grande",
+  "vision": false,
+  "architecture": {
+   "architecture": "llama",
+   "nb_param": 1700000000,
+   "num_layers": 24,
+   "num_kv_heads": 32,
+   "head_dim": 64,
+   "context_max": 8192,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat"
+  ]
+ },
+ {
+  "nom": "moondream:1.8b",
+  "taille_octets": 828661152,
+  "projecteur_octets": 909777984,
+  "format": "Q4_0",
+  "famille": "phi2",
+  "parametres": "1B",
+  "description": "Vision : décrit des images",
+  "vision": true,
+  "architecture": {
+   "architecture": "phi2",
+   "nb_param": 1000000000,
+   "num_layers": 24,
+   "num_kv_heads": 32,
+   "head_dim": 64,
+   "context_max": 2048,
+   "sliding_window": null
+  },
+  "tags": [
+   "vision"
+  ]
+ },
+ {
+  "nom": "gemma2:2b",
+  "taille_octets": 1629509152,
+  "projecteur_octets": 0,
+  "format": "Q4_0",
+  "famille": "gemma2",
+  "parametres": "2.6B",
+  "description": "Gemma 2 compact",
+  "vision": false,
+  "architecture": {
+   "architecture": "gemma2",
+   "nb_param": 2600000000,
+   "num_layers": 26,
+   "num_kv_heads": 4,
+   "head_dim": 256,
+   "context_max": 8192,
+   "sliding_window": 4096
+  },
+  "tags": [
+   "chat",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "granite3.3:2b",
+  "taille_octets": 1545303328,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "granite",
+  "parametres": "2.5B",
+  "description": "IBM Granite, orienté entreprise",
+  "vision": false,
+  "architecture": {
+   "architecture": "granite",
+   "nb_param": 2500000000,
+   "num_layers": 40,
+   "num_kv_heads": 8,
+   "head_dim": 64,
+   "context_max": 131072,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "code"
+  ]
+ },
+ {
+  "nom": "qwen2.5:3b",
+  "taille_octets": 1929903008,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "qwen2",
+  "parametres": "3.1B",
+  "description": "Bon niveau pour sa taille",
+  "vision": false,
+  "architecture": {
+   "architecture": "qwen2",
+   "nb_param": 3100000000,
+   "num_layers": 36,
+   "num_kv_heads": 2,
+   "head_dim": 128,
+   "context_max": 32768,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "llama3.2:3b",
+  "taille_octets": 2019377376,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "llama",
+  "parametres": "3.2B",
+  "description": "Référence pour l'embarqué",
+  "vision": false,
+  "architecture": {
+   "architecture": "llama",
+   "nb_param": 3200000000,
+   "num_layers": 28,
+   "num_kv_heads": 8,
+   "head_dim": 128,
+   "context_max": 131072,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "phi4-mini:3.8b",
+  "taille_octets": 2491874624,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "phi3",
+  "parametres": "3.8B",
+  "description": "Microsoft Phi-4 mini, raisonnement et maths",
+  "vision": false,
+  "architecture": {
+   "architecture": "phi3",
+   "nb_param": 3800000000,
+   "num_layers": 32,
+   "num_kv_heads": 8,
+   "head_dim": 128,
+   "context_max": 131072,
+   "sliding_window": 262144
+  },
+  "tags": [
+   "chat",
+   "raisonnement"
+  ]
+ },
+ {
+  "nom": "phi3.5:3.8b",
+  "taille_octets": 2176177152,
+  "projecteur_octets": 0,
+  "format": "Q4_0",
+  "famille": "phi3",
+  "parametres": "3.8B",
+  "description": "Microsoft Phi-3.5 mini",
+  "vision": false,
+  "architecture": {
+   "architecture": "phi3",
+   "nb_param": 3800000000,
+   "num_layers": 32,
+   "num_kv_heads": 32,
+   "head_dim": 96,
+   "context_max": 131072,
+   "sliding_window": 262144
+  },
+  "tags": [
+   "chat"
+  ]
+ },
+ {
+  "nom": "qwen3:4b",
+  "taille_octets": 2497280480,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "qwen3",
+  "parametres": "4.0B",
+  "description": "Qwen 3, très bon pour sa taille",
+  "vision": false,
+  "architecture": {
+   "architecture": "qwen3",
+   "nb_param": 4022468096,
+   "num_layers": 36,
+   "num_kv_heads": 8,
+   "head_dim": 128,
+   "context_max": 262144,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "raisonnement",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "gemma3:4b",
+  "taille_octets": 2499012288,
+  "projecteur_octets": 851251104,
+  "format": "Q4_K_M",
+  "famille": "gemma3",
+  "parametres": "3.9B",
+  "description": "Gemma 3 avec vision",
+  "vision": true,
+  "architecture": {
+   "architecture": "gemma3",
+   "nb_param": 3900000000,
+   "num_layers": 34,
+   "num_kv_heads": 4,
+   "head_dim": 256,
+   "context_max": 131072,
+   "sliding_window": 1024
+  },
+  "tags": [
+   "chat",
+   "vision",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "mistral:7b",
+  "taille_octets": 4372811712,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "llama",
+  "parametres": "7.2B",
+  "description": "Mistral 7B, la référence des 7B",
+  "vision": false,
+  "architecture": {
+   "architecture": "llama",
+   "nb_param": 7200000000,
+   "num_layers": 32,
+   "num_kv_heads": 8,
+   "head_dim": 128,
+   "context_max": 32768,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat"
+  ]
+ },
+ {
+  "nom": "qwen2.5:7b",
+  "taille_octets": 4683073952,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "qwen2",
+  "parametres": "7.6B",
+  "description": "Qwen 2.5 7B",
+  "vision": false,
+  "architecture": {
+   "architecture": "qwen2",
+   "nb_param": 7600000000,
+   "num_layers": 28,
+   "num_kv_heads": 4,
+   "head_dim": 128,
+   "context_max": 32768,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "code",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "llama3.1:8b",
+  "taille_octets": 4920738944,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "llama",
+  "parametres": "8.0B",
+  "description": "Llama 3.1 8B, contexte jusqu'à 128K",
+  "vision": false,
+  "architecture": {
+   "architecture": "llama",
+   "nb_param": 8000000000,
+   "num_layers": 32,
+   "num_kv_heads": 8,
+   "head_dim": 128,
+   "context_max": 131072,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "multilingue"
+  ]
+ },
+ {
+  "nom": "qwen3:8b",
+  "taille_octets": 5225374496,
+  "projecteur_octets": 0,
+  "format": "Q4_K_M",
+  "famille": "qwen3",
+  "parametres": "8.2B",
+  "description": "Qwen 3 8B",
+  "vision": false,
+  "architecture": {
+   "architecture": "qwen3",
+   "nb_param": 8199999999,
+   "num_layers": 36,
+   "num_kv_heads": 8,
+   "head_dim": 128,
+   "context_max": 40960,
+   "sliding_window": null
+  },
+  "tags": [
+   "chat",
+   "raisonnement",
+   "multilingue"
+  ]
+ }
+]

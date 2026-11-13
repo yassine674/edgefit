@@ -7,3 +7,5 @@ __pycache__/
 .claude/
 build/
 dist/
+PRODUCT.md
+DESIGN.md

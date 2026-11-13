@@ -4,13 +4,17 @@ Tableau de bord local pour faire tourner des LLM sur une NVIDIA Jetson ou un Ras
 
 ## Fonctionnalités
 
-- **Compatibilité avant téléchargement.** Pour un modèle Ollama (`llama3.2:3b`) ou un GGUF de Hugging Face (`hf.co/<dépôt>:Q4_K_M`), edgefit lit seulement le manifeste et le premier mégaoctet du fichier (taille exacte, couches, têtes KV, contexte), puis compare à la mémoire libre mesurée sur la carte, marge de sécurité comprise.
-  - Si le modèle rentre : les réglages possibles (tel quel, meilleure qualité, plus long contexte, plus rapide), avec un plafond théorique de tokens/s.
-  - Sinon : des pistes classées de la plus simple à la plus lourde (réduire le contexte, quantifier le cache KV d'Ollama, autre quantification, libérer de la mémoire, modèle plus petit, autre matériel), avec le gain de chaque piste et les commandes à lancer.
-  - Les formules de mémoire (cache KV, buffers) viennent de [llm-modelfit](https://github.com/yassine674/llm-modelfit).
-- **Matériel en direct** (WebSocket, chaque seconde) : CPU, GPU, mémoire, températures, puissance, alertes d'alimentation du Raspberry Pi.
-- **Modèles** : liste des modèles installés dans Ollama, téléchargement avec progression. Pour un modèle protégé sur Hugging Face, Ollama s'authentifie avec sa propre clé SSH (`~/.ollama/id_ed25519.pub`, à ajouter dans les clés SSH du compte Hugging Face) : aucun token n'est stocké par l'application.
-- **Chat** en streaming, avec le contexte (`num_ctx`) choisi. Sous chaque réponse : TTFT, débit de génération et de prefill, temps de chargement, et mémoire réellement occupée par le modèle selon Ollama (à comparer à l'estimation).
+Une appli d'hébergement d'IA locale, à la manière d'Open WebUI, pensée pour une petite carte :
+
+- **Découvrir** : 26 modèles adaptés aux petites cartes, présentés en cartes avec leur verdict pour *cette* carte (tient, juste, trop gros), la mémoire nécessaire, la vitesse maximale théorique et le score mesuré. Filtres, recommandations, téléchargement en un clic. Au survol, la place du modèle apparaît dans la barre mémoire de la carte. La recherche interroge aussi Hugging Face (dépôts GGUF, avec le choix de la version).
+- **Modèle** : verdict détaillé (poids, cache KV, buffers face à la mémoire libre mesurée), architecture, mémoire selon le contexte, et la liste complète des optimisations quand il ne tient pas. Le bouton Télécharger reste grisé tant que le modèle ne tient pas. La compatibilité est calculée **avant** de télécharger : seuls le manifeste et le premier mégaoctet du fichier GGUF sont lus.
+- **Chat** : conversations enregistrées sur la carte (SQLite), instructions du système, température et contexte par conversation. Sous chaque réponse, une barre montre où est passé le temps (chargement, lecture du message, génération) et une phrase claire la résume (par exemple « 21 tok/s, environ 4 fois votre vitesse de lecture »). À droite : vitesse en direct, premier mot détaillé, mémoire estimée et mesurée, CPU, GPU, température, puissance, score.
+- **Mes modèles** : modèles installés, chargés ou non, mémoire réelle, part sur le GPU, compte à rebours avant déchargement, espace disque ; décharger ou supprimer.
+- **Bancs d'essai et score edgefit** : le même test pour chaque modèle (contexte 4K, 128 tokens, trois textes de même longueur). Score sur 100 = 60 % vitesse (2 à 20 tokens/s) + 40 % délai du premier mot (10 s à 0,5 s), plafonné à 60 s'il reste moins de 10 % de mémoire libre ; pas de score si le modèle ne tient pas. L'énergie (tokens par joule) est affichée à part.
+- **Matériel** : identité de la carte (JetPack, mode d'énergie, Ollama), répartition de la mémoire, courbes en direct, journal des alertes.
+- **Réglages** : langue, contexte par défaut, cache KV déclaré du serveur Ollama (avec les commandes pour le changer), santé de la carte, export et effacement des données.
+
+Interface en français et en anglais, utilisable sur PC et sur téléphone. Les conversations et les bancs d'essai sont dans `~/.local/share/edgefit/edgefit.db` (variable `EDGEFIT_DB` pour un autre fichier).
 
 ## Installation sur la Jetson (ou le Raspberry Pi)
 

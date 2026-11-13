@@ -3,6 +3,8 @@
 # code interne : elle pourrait être servie ailleurs sans rien changer côté serveur.
 import asyncio
 import json
+import os
+import shutil
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -11,7 +13,9 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import AfterValidator, BaseModel, Field
 
-from .compatibilite import OCTETS_KV, analyser, budget
+from . import banc, calibration, stockage
+from .catalogue import SUGGESTIONS, Catalogue, depot_valide
+from .compatibilite import OCTETS_KV, _verdict, analyser, budget, estimer, plateforme_correspondante, solutions, verdict_rapide
 from .ollama import GO, ModeleInconnu, OllamaIndisponible, nom_valide
 from .registre import Registre, RegistreErreur
 from .securite import NOM_COOKIE, jeton_valide, origine_autorisee
@@ -54,6 +58,30 @@ class DemandeChat(BaseModel):
     # toujours envoyé à Ollama : sa valeur par défaut change d'une version à l'autre,
     # et c'est elle qui fixe la taille du cache KV réservé
     num_ctx: Contexte = 4096
+    systeme: str = Field(default="", max_length=8000)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    conversation_id: int | None = None  # si présent, la question et la réponse sont enregistrées
+    type_kv: TypeKV = "f16"  # réglage déclaré du serveur : sert à l'estimation enregistrée pour la calibration
+
+
+class DemandeModele(BaseModel):
+    nom: NomModele
+
+
+class DemandeConversation(BaseModel):
+    modele: NomModele
+    titre: str = Field(default="", max_length=200)
+    systeme: str = Field(default="", max_length=8000)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    num_ctx: Contexte = 4096
+
+
+class ModifConversation(BaseModel):
+    titre: str | None = Field(default=None, max_length=200)
+    modele: NomModele | None = None
+    systeme: str | None = Field(default=None, max_length=8000)
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    num_ctx: Contexte | None = None
 
 
 class DemandeCompatibilite(BaseModel):
@@ -62,6 +90,16 @@ class DemandeCompatibilite(BaseModel):
     # réglage global du serveur Ollama (OLLAMA_KV_CACHE_TYPE), que l'API ne permet pas de lire
     type_kv: TypeKV = "f16"
     parallele: int = Field(default=1, ge=1, le=16)  # OLLAMA_NUM_PARALLEL
+
+
+def dossier_modeles():
+    """Dossier où Ollama range ses modèles (pour l'espace disque libre)."""
+    candidats = [os.environ.get("OLLAMA_MODELS"), "/usr/share/ollama/.ollama/models",  # service systemd
+                 str(Path.home() / ".ollama" / "models")]
+    for chemin in candidats:
+        if chemin and Path(chemin).exists():
+            return Path(chemin)
+    return Path.home()
 
 
 def _message_indisponible(ollama):
@@ -99,9 +137,64 @@ async def _avec_memoire_chargee(ollama, nom, evenements):
         yield evt
 
 
-def creer_app(fournisseur, ollama, jeton, registre=None, intervalle_s=1.0):
+class Occupation:
+    """Qui utilise la carte : conversations en cours (par modèle) et banc d'essai.
+    Un banc d'essai décharge et recharge les modèles : il ne doit pas couper une conversation."""
+
+    def __init__(self):
+        self.flux = {}
+        self.banc = None
+
+    def total(self):
+        return sum(self.flux.values())
+
+    def entrer(self, nom):
+        self.flux[nom] = self.flux.get(nom, 0) + 1
+
+    def sortir(self, nom):
+        self.flux[nom] -= 1
+        if not self.flux[nom]:
+            del self.flux[nom]
+
+
+def _avec_score(entree):
+    s = banc.score(entree["mesures"])
+    return {**entree, "score": s}
+
+
+def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, intervalle_s=1.0):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     registre = registre or Registre()
+    catalogue = catalogue or Catalogue()
+    occupation = Occupation()
+    carte = getattr(fournisseur, "carte", None) or fournisseur.machine
+
+    async def observer(nom, num_ctx, type_kv, mesure_go):
+        """Estimation détaillée de ce modèle à côté de la mémoire mesurée : un point de calibration."""
+        try:
+            infos = await ollama.infos(nom)
+            if infos is None:
+                return
+            e = estimer(infos["architecture"], infos["taille_octets"], num_ctx, type_kv)
+            await asyncio.to_thread(stockage.ajouter_observation, carte, nom, num_ctx, type_kv,
+                                    e["poids"] / GO, e["cache_kv"] / GO, e["total"] / GO, mesure_go)
+        except (OllamaIndisponible, ModeleInconnu, KeyError, TypeError):
+            pass
+
+    async def calibration_carte():
+        return calibration.resume(await asyncio.to_thread(stockage.lister_observations, carte))
+
+    async def budget_actuel():
+        memoire = await asyncio.to_thread(fournisseur.memoire)
+        charges = await _charges(ollama)
+        b = budget(fournisseur.type_carte, memoire["totale"], memoire["disponible"], sum(m["taille"] for m in charges))
+        return b, charges, memoire
+
+    async def installes():
+        try:
+            return await ollama.modeles()
+        except OllamaIndisponible:
+            return []
 
     @app.middleware("http")
     async def verifier_acces(request: Request, call_next):
@@ -132,10 +225,53 @@ def creer_app(fournisseur, ollama, jeton, registre=None, intervalle_s=1.0):
 
     @app.get("/api/ollama")
     async def etat_ollama():
+        d = shutil.disk_usage(dossier_modeles())
+        disque = {"libre_go": d.free / GO, "total_go": d.total / GO, "dossier": str(dossier_modeles())}
         try:
-            return {"disponible": True, "version": await ollama.version(), "url": ollama.url}
+            return {"disponible": True, "version": await ollama.version(), "url": ollama.url, "disque": disque}
         except OllamaIndisponible:
-            return {"disponible": False, "version": None, "url": ollama.url}
+            return {"disponible": False, "version": None, "url": ollama.url, "disque": disque}
+
+    cache_diag = {}
+
+    @app.get("/api/diagnostic")
+    async def diagnostic_carte():
+        # quelques secondes (commandes système, accès internet) : gardé une minute
+        import time
+        if cache_diag.get("t", 0) > time.monotonic() - 60:
+            return cache_diag["r"]
+        from .diagnostic import etat_carte
+        url = ollama.url if ollama.url.startswith("http") else "http://127.0.0.1:11434"
+        r = await asyncio.to_thread(etat_carte, url)
+        if not ollama.url.startswith("http"):  # mode --fake : Ollama simulé
+            r["faits"]["ollama_version"] = "simulé"
+            r["verifications"] = [v for v in r["verifications"] if not v["code"].startswith("ollama")]
+            r["verifications"].insert(0, {"niveau": "OK", "code": "ollama", "params": {"version": "simulé"}})
+        r["faits"]["base"] = str(stockage.chemin_db())
+        cache_diag.update(t=time.monotonic(), r=r)
+        return r
+
+    @app.get("/api/calibration")
+    async def voir_calibration():
+        observations = await asyncio.to_thread(stockage.lister_observations, carte)
+        return {"carte": carte, **calibration.resume(observations), "depart": calibration.DEPART,
+                "min_points": calibration.MIN_POINTS, "observations": observations}
+
+    @app.delete("/api/calibration")
+    async def effacer_calibration():
+        return {"effaces": await asyncio.to_thread(stockage.tout_effacer, "observations")}
+
+    @app.get("/api/export")
+    async def exporter():
+        return await asyncio.to_thread(stockage.exporter)
+
+    @app.delete("/api/conversations")
+    async def effacer_conversations():
+        return {"effaces": await asyncio.to_thread(stockage.tout_effacer, "conversations")}
+
+    @app.delete("/api/bancs")
+    async def effacer_bancs():
+        return {"effaces": await asyncio.to_thread(stockage.tout_effacer, "bancs")}
 
     @app.get("/api/modeles")
     async def modeles():
@@ -157,9 +293,197 @@ def creer_app(fournisseur, ollama, jeton, registre=None, intervalle_s=1.0):
 
     @app.post("/api/chat")
     async def chat(demande: DemandeChat):
+        if occupation.banc:
+            raise HTTPException(409, {"code": "banc_en_cours", "message": f"banc d'essai en cours ({occupation.banc})"})
         messages = [m.model_dump() for m in demande.messages]
-        flux = ollama.discuter(demande.modele, messages, {"num_ctx": demande.num_ctx})
-        return _ndjson(ollama, _avec_memoire_chargee(ollama, demande.modele, flux))
+        envoyes = ([{"role": "system", "content": demande.systeme}] if demande.systeme.strip() else []) + messages
+        options = {"num_ctx": demande.num_ctx}
+        if demande.temperature is not None:
+            options["temperature"] = demande.temperature
+        if demande.conversation_id is not None:
+            if await asyncio.to_thread(stockage.lire_conversation, demande.conversation_id) is None:
+                raise HTTPException(404, {"code": "conversation", "message": "conversation introuvable"})
+            await asyncio.to_thread(stockage.ajouter_message, demande.conversation_id, "user", messages[-1]["content"])
+
+        async def flux():
+            occupation.entrer(demande.modele)
+            texte, mesures = [], None
+            try:
+                async for evt in _avec_memoire_chargee(ollama, demande.modele,
+                                                       ollama.discuter(demande.modele, envoyes, options)):
+                    if evt["type"] == "token":
+                        texte.append(evt["texte"])
+                    elif evt["type"] == "fin":
+                        mesures = evt["metriques"]
+                        if mesures.get("memoire_chargee_go"):
+                            await observer(demande.modele, demande.num_ctx, demande.type_kv, mesures["memoire_chargee_go"])
+                    yield evt
+            finally:
+                occupation.sortir(demande.modele)
+                # une seule écriture par réponse, même si le navigateur coupe en cours de route
+                if demande.conversation_id is not None and texte:
+                    await asyncio.to_thread(stockage.ajouter_message, demande.conversation_id, "assistant",
+                                            "".join(texte), mesures)
+        return _ndjson(ollama, flux())
+
+    @app.get("/api/recherche")
+    async def recherche(q: str = ""):
+        # suggestions pendant la frappe : aucune lecture de registre ici, seulement des noms
+        return await catalogue.rechercher(q[:100], await installes())
+
+    @app.get("/api/variantes")
+    async def variantes(depot: str):
+        if not depot_valide(depot):
+            raise HTTPException(400, "nom de dépôt invalide")
+        versions, erreur = await catalogue.variantes(depot)
+        if erreur:
+            raise HTTPException(502, {"code": erreur})
+        return versions
+
+    # --- catalogue : verdict de chaque modèle suggéré, en une requête, sans réseau ---
+    @app.get("/api/catalogue")
+    async def catalogue_carte(num_ctx: Contexte = 4096, type_kv: TypeKV = "f16"):
+        b, charges, memoire = await budget_actuel()
+        noms_installes = {m["nom"] for m in await installes()}
+        plateforme = await asyncio.to_thread(plateforme_correspondante, getattr(fournisseur, "carte", None))
+        bande = plateforme.get("bandwidth_gb_s") if plateforme else None
+        derniers = {}
+        for entree in await asyncio.to_thread(stockage.lister_bancs):
+            derniers.setdefault(entree["modele"], entree)  # liste triée du plus récent au plus ancien
+        modeles = []
+        calib = await calibration_carte()
+        for e in SUGGESTIONS:
+            arch = {**e["architecture"], "projecteur_octets": e["projecteur_octets"]}
+            v = verdict_rapide(arch, e["taille_octets"], b, min(num_ctx, arch.get("context_max") or num_ctx),
+                               type_kv, bande_passante=bande)
+            if calib["active"]:
+                c = calib["coef"]
+                total = calibration.predire((c["fixe_go"], c["a"], c["b"]), v["poids_go"], v["cache_kv_go"])
+                v.update(total_brut_go=v["total_go"], total_go=total, reste_go=b["utilisable"] / GO - total,
+                         verdict=_verdict(total * GO, b))
+            mesure = derniers.get(e["nom"])
+            modeles.append({**{k: e[k] for k in ("nom", "description", "famille", "parametres", "format", "vision", "tags")},
+                            "taille_go": (e["taille_octets"] + e["projecteur_octets"]) / GO,
+                            "installe": e["nom"] in noms_installes, **v,
+                            "score": banc.score(mesure["mesures"]) if mesure else None})
+        return {"budget_go": {k: v / GO for k, v in b.items()}, "num_ctx": num_ctx, "type_kv": type_kv,
+                "calibration": {k: calib[k] for k in ("n", "active")},
+                "plateforme": plateforme["name"] if plateforme else None, "modeles": modeles,
+                "charges": [{"nom": m["nom"], "taille_go": m["taille"] / GO} for m in charges]}
+
+    # --- modèles installés ---
+    @app.get("/api/charges")
+    async def charges():
+        return [{**m, "taille_go": m["taille"] / GO, "occupe": occupation.flux.get(m["nom"], 0) > 0}
+                for m in await _charges(ollama)]
+
+    @app.post("/api/modeles/decharger")
+    async def decharger(demande: DemandeModele):
+        if occupation.flux.get(demande.nom):
+            raise HTTPException(409, {"code": "occupe", "message": "une conversation utilise ce modèle"})
+        await ollama.decharger(demande.nom)
+        return {"ok": True}
+
+    @app.post("/api/modeles/supprimer")
+    async def supprimer(demande: DemandeModele):
+        if occupation.flux.get(demande.nom) or occupation.banc == demande.nom:
+            raise HTTPException(409, {"code": "occupe", "message": "ce modèle est en cours d'utilisation"})
+        try:
+            await ollama.decharger(demande.nom)
+            await ollama.supprimer(demande.nom)
+        except ModeleInconnu as e:
+            raise HTTPException(404, {"code": "introuvable", "message": str(e)})
+        return {"ok": True}
+
+    # --- conversations (SQLite sur la carte) ---
+    @app.get("/api/conversations")
+    async def conversations():
+        return await asyncio.to_thread(stockage.lister_conversations)
+
+    @app.post("/api/conversations")
+    async def nouvelle_conversation(demande: DemandeConversation):
+        return await asyncio.to_thread(stockage.creer_conversation, demande.modele, demande.titre,
+                                       demande.systeme, demande.temperature, demande.num_ctx)
+
+    @app.get("/api/conversations/{id_conv}")
+    async def conversation(id_conv: int):
+        conv = await asyncio.to_thread(stockage.lire_conversation, id_conv)
+        if conv is None:
+            raise HTTPException(404, {"code": "conversation", "message": "conversation introuvable"})
+        return conv
+
+    @app.patch("/api/conversations/{id_conv}")
+    async def modifier_conversation(id_conv: int, demande: ModifConversation):
+        champs = demande.model_dump(exclude_unset=True)
+        conv = await asyncio.to_thread(lambda: stockage.modifier_conversation(id_conv, **champs))
+        if conv is None:
+            raise HTTPException(404, {"code": "conversation", "message": "conversation introuvable"})
+        return conv
+
+    @app.delete("/api/conversations/{id_conv}")
+    async def supprimer_conversation(id_conv: int):
+        return {"ok": await asyncio.to_thread(stockage.supprimer_conversation, id_conv)}
+
+    # --- banc d'essai et score ---
+    @app.get("/api/bancs")
+    async def bancs():
+        return [_avec_score(e) for e in await asyncio.to_thread(stockage.lister_bancs)]
+
+    @app.post("/api/banc")
+    async def lancer_banc(demande: DemandeModele):
+        if occupation.banc or occupation.total():
+            raise HTTPException(409, {"code": "carte_occupee", "message": "la carte est déjà utilisée"})
+        occupation.banc = demande.nom
+
+        async def phases():
+            puissances, libres = [], []
+            arret = asyncio.Event()
+
+            async def relever():
+                # puissance de la carte et mémoire libre, une fois par demi-seconde pendant les essais
+                while not arret.is_set():
+                    m = await asyncio.to_thread(fournisseur.lire)
+                    if m.get("puissance_w"):
+                        puissances.append(m["puissance_w"])
+                    if m.get("ram_totale_go"):
+                        libres.append((m["ram_totale_go"] - m["ram_utilisee_go"]) / m["ram_totale_go"])
+                    await asyncio.sleep(0.5)
+
+            async def essai(texte):
+                options = {"num_ctx": banc.NUM_CTX, "num_predict": banc.NUM_PREDICT, "temperature": 0, "seed": 42}
+                async for evt in ollama.discuter(demande.nom, [{"role": "user", "content": texte}], options):
+                    if evt["type"] == "erreur":
+                        raise RuntimeError(evt["erreur"])
+                    if evt["type"] == "fin":
+                        return evt["metriques"]
+
+            releve = asyncio.create_task(relever())
+            try:
+                yield {"type": "phase", "phase": "dechargement"}
+                await ollama.decharger(demande.nom)
+                textes = banc.textes()
+                yield {"type": "phase", "phase": "froid"}
+                froid = await essai(textes[0])
+                chauds = []
+                for i, texte in enumerate(textes[1:], start=1):
+                    yield {"type": "phase", "phase": "chaud", "numero": i}
+                    chauds.append(await essai(texte))
+                charge = next((m for m in await _charges(ollama) if m["nom"] == demande.nom), None)
+                arret.set()
+                mesures = banc.resumer(chauds, froid["chargement_s"], charge["taille"] / GO if charge else None,
+                                       min(libres) if libres else None,
+                                       sum(puissances) / len(puissances) if puissances else None)
+                await asyncio.to_thread(stockage.ajouter_banc, demande.nom, banc.PROTOCOLE, banc.NUM_CTX, "f16", mesures)
+                if mesures.get("memoire_go"):
+                    await observer(demande.nom, banc.NUM_CTX, "f16", mesures["memoire_go"])
+                yield {"type": "fin", "mesures": mesures, "score": banc.score(mesures)}
+            except (RuntimeError, ModeleInconnu) as e:
+                yield {"type": "erreur", "erreur": str(e)}
+            finally:
+                arret.set()
+                releve.cancel()
+                occupation.banc = None
+        return _ndjson(ollama, phases())
 
     @app.post("/api/compatibilite")
     async def compatibilite(demande: DemandeCompatibilite):
@@ -174,10 +498,10 @@ def creer_app(fournisseur, ollama, jeton, registre=None, intervalle_s=1.0):
             try:
                 infos = await registre.infos(demande.modele)
             except RegistreErreur as e:
-                raise HTTPException(422, str(e))
+                raise HTTPException(422, {"code": e.code, "message": str(e)})
         arch = infos["architecture"]
         if not all(arch.get(c) for c in ("num_layers", "num_kv_heads", "head_dim")):
-            raise HTTPException(422, "architecture incomplète dans les métadonnées du modèle")
+            raise HTTPException(422, {"code": "gguf", "message": "architecture incomplète dans les métadonnées du modèle"})
 
         # 2. la mémoire de la carte, mesurée maintenant
         memoire = await asyncio.to_thread(fournisseur.memoire)
@@ -191,8 +515,28 @@ def creer_app(fournisseur, ollama, jeton, registre=None, intervalle_s=1.0):
             demande.num_ctx, demande.type_kv, demande.parallele, fournisseur.type_carte,
             memoire.get("bureau_actif", False), getattr(fournisseur, "carte", None),
         )
+        calib = await calibration_carte()
+        resultat["calibration"] = calib
+        if calib["active"]:
+            c = calib["coef"]
+            e = resultat["estimation_go"]
+            total = calibration.predire((c["fixe_go"], c["a"], c["b"]), e["poids"], e["cache_kv"])
+            verdict = _verdict(total * GO, b)
+            calib.update(total_go=total, verdict_brut=resultat["verdict"])
+            resultat["verdict"] = verdict
+            if verdict == "trop_gros" and resultat["solutions"] is None:
+                resultat["solutions"] = await asyncio.to_thread(
+                    solutions, demande.modele, arch, infos["taille_octets"], infos.get("format"), b, demande.num_ctx,
+                    demande.type_kv, demande.parallele, fournisseur.type_carte, memoire.get("bureau_actif", False))
+            if verdict == "trop_gros":
+                resultat["solutions"]["manque_go"] = max(0.0, total - b["utilisable"] / GO)
         resultat["source"] = source
         resultat["taille_fichier_go"] = infos["taille_octets"] / GO
+        resultat["projecteur_go"] = infos.get("projecteur_octets", 0) / GO
+        # ce qu'il faut télécharger (installé : rien) et la place libre pour le faire
+        resultat["telechargement_go"] = (0 if source == "installé"
+                                         else infos.get("telechargement_octets", infos["taille_octets"]) / GO)
+        resultat["disque_libre_go"] = shutil.disk_usage(dossier_modeles()).free / GO
         resultat["charges"] = [{"nom": m["nom"], "taille_go": m["taille"] / GO} for m in charges]
         return resultat
 

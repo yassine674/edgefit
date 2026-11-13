@@ -3,86 +3,76 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>edgefit</title>
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/i18n.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <header class="entete">
-    <div>
-      <h1>edgefit</h1>
-      <p class="machine" id="machine">Connexion…</p>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="signal" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#5b8def"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient>
+      <linearGradient id="signal-aire" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#8b5cf6" stop-opacity="0.25"/><stop offset="1" stop-color="#5b8def" stop-opacity="0"/></linearGradient>
+      <symbol id="i-decouvrir" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/></g></symbol>
+      <symbol id="i-modeles" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/></g></symbol>
+      <symbol id="i-bancs" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h16"/><path d="M7 16v-5M12 16V6M17 16v-8"/></g></symbol>
+      <symbol id="i-materiel" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></g></symbol>
+      <symbol id="i-reglages" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></g></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-envoyer" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+      <symbol id="i-mesures" viewBox="0 0 24 24"><path d="M4 18l5-6 4 3 7-9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-ok" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-juste" viewBox="0 0 24 24"><path d="M12 7v6m0 4h.01" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+      <symbol id="i-non" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+    </defs>
+  </svg>
+
+  <div class="app">
+    <aside class="barre" id="barre">
+      <div class="marque"><span class="logo" aria-hidden="true"></span>edgefit</div>
+      <div class="bloc-carte">
+        <span class="nom-carte" id="nom-carte">…</span>
+        <div class="barre-ram" id="barre-ram" aria-hidden="true">
+          <span class="sys" id="ram-sys"></span><span class="mod" id="ram-mod"></span>
+          <span class="fantome" id="fantome" hidden></span>
+        </div>
+        <div class="chiffres-ram"><span id="ram-texte"></span><span id="ram-fantome"></span></div>
+        <div class="etat-ollama"><span class="point" id="point-ollama"></span><span id="texte-ollama">Ollama…</span></div>
+      </div>
+      <button type="button" class="bouton-nouveau" id="nouvelle-conv"><svg width="16" height="16"><use href="#i-plus"/></svg><span data-t="nouvelle_conv"></span></button>
+      <nav class="conversations" id="liste-conv" aria-label="Conversations"></nav>
+      <nav class="nav" aria-label="Navigation">
+        <a href="#/decouvrir" data-page="decouvrir"><svg><use href="#i-decouvrir"/></svg><span data-t="nav_decouvrir"></span></a>
+        <a href="#/modeles" data-page="modeles"><svg><use href="#i-modeles"/></svg><span data-t="nav_modeles"></span><span class="compte" id="compte-modeles"></span></a>
+        <a href="#/bancs" data-page="bancs"><svg><use href="#i-bancs"/></svg><span data-t="nav_bancs"></span></a>
+        <a href="#/materiel" data-page="materiel"><svg><use href="#i-materiel"/></svg><span data-t="nav_materiel"></span></a>
+        <a href="#/reglages" data-page="reglages"><svg><use href="#i-reglages"/></svg><span data-t="nav_reglages"></span></a>
+      </nav>
+      <div class="pied-barre">
+        <button type="button" class="lien-discret" id="bouton-langue">EN</button>
+        <span class="aide" id="version-app">edgefit</span>
+      </div>
+    </aside>
+
+    <div class="contenu">
+      <header class="entete-mobile">
+        <button type="button" class="bouton petit" id="ouvrir-barre" aria-controls="barre" aria-expanded="false"><svg><use href="#i-menu"/></svg><span class="sr-only">Menu</span></button>
+        <span class="titre" id="titre-mobile">edgefit</span>
+      </header>
+      <div class="banniere" id="banniere" hidden role="status"></div>
+      <main id="page"></main>
     </div>
-    <span class="statut" id="statut" data-etat="attente">En attente</span>
-  </header>
+  </div>
 
-  <main>
-    <div class="alertes" id="alertes" hidden></div>
-
-    <h2 class="titre-section">Matériel</h2>
-    <section class="grille" id="grille" aria-live="polite"></section>
-
-    <section class="panneau compat" aria-labelledby="titre-compat">
-      <h2 id="titre-compat">Compatibilité</h2>
-      <p class="note">Avant de télécharger : est-ce que le modèle rentre dans la mémoire libre de cette carte, et sinon que faire ?
-        Fonctionne aussi pour un modèle pas encore téléchargé (seul l'en-tête du fichier est lu).</p>
-      <form id="form-compat" class="ligne-form compat-form">
-        <label class="sr-only" for="compat-modele">Modèle à vérifier</label>
-        <input id="compat-modele" list="modeles-installes" placeholder="ex. llama3.2:3b ou hf.co/…:Q4_K_M"
-               required autocomplete="off" spellcheck="false">
-        <datalist id="modeles-installes"></datalist>
-        <label class="champ-court">Contexte
-          <select id="compat-contexte"></select>
-        </label>
-        <label class="champ-court" title="Réglage global du serveur Ollama (variable OLLAMA_KV_CACHE_TYPE). Par défaut : f16.">Cache KV d'Ollama
-          <select id="compat-kv">
-            <option value="f16">f16 (défaut)</option>
-            <option value="q8_0">q8_0</option>
-            <option value="q4_0">q4_0</option>
-          </select>
-        </label>
-        <button type="submit" id="bouton-compat">Vérifier</button>
-      </form>
-      <div id="resultat-compat" aria-live="polite"></div>
-    </section>
-
-    <div class="panneaux">
-      <section class="panneau" aria-labelledby="titre-modeles">
-        <h2 id="titre-modeles">Modèles</h2>
-        <p class="note" id="etat-ollama">Vérification d'Ollama…</p>
-        <ul class="liste-modeles" id="liste-modeles"></ul>
-        <form id="form-telecharger" class="ligne-form">
-          <label class="sr-only" for="nom-telecharger">Modèle à télécharger</label>
-          <input id="nom-telecharger" placeholder="ex. qwen2.5:0.5b ou hf.co/…:Q4_K_M"
-                 required autocomplete="off" spellcheck="false">
-          <button type="submit" id="bouton-telecharger">Télécharger</button>
-        </form>
-        <div id="progression" hidden>
-          <progress id="barre" max="1" value="0"></progress>
-          <p class="note" id="texte-progression"></p>
-        </div>
-      </section>
-
-      <section class="panneau panneau-chat" aria-labelledby="titre-chat">
-        <div class="entete-panneau">
-          <h2 id="titre-chat">Chat</h2>
-          <div class="choix-chat">
-            <label class="sr-only" for="choix-modele">Modèle utilisé</label>
-            <select id="choix-modele"></select>
-            <label class="sr-only" for="choix-contexte">Contexte (tokens)</label>
-            <select id="choix-contexte" title="Contexte envoyé à Ollama (num_ctx) : fixe la taille du cache KV réservé"></select>
-          </div>
-        </div>
-        <div class="conversation" id="conversation" aria-live="polite">
-          <p class="note vide" id="conversation-vide">Choisissez un modèle et envoyez un message : les mesures (TTFT, débit) s'affichent sous chaque réponse.</p>
-        </div>
-        <form id="form-chat" class="ligne-form">
-          <label class="sr-only" for="question">Votre message</label>
-          <textarea id="question" rows="2" placeholder="Votre message… (Entrée pour envoyer, Maj+Entrée pour aller à la ligne)" required></textarea>
-          <button type="submit" id="envoyer">Envoyer</button>
-        </form>
-      </section>
+  <dialog id="dialogue">
+    <h2 id="dialogue-titre"></h2>
+    <p id="dialogue-texte"></p>
+    <div class="acts">
+      <button type="button" class="bouton" id="dialogue-non"></button>
+      <button type="button" class="bouton principal" id="dialogue-oui"></button>
     </div>
-  </main>
+  </dialog>
 </body>
 </html>

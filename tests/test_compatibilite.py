@@ -92,19 +92,22 @@ def test_rien_ne_rentre_pas_de_pile():
 def test_solutions_contexte_reduit_et_cache_quantifie():
     b = budget("jetson", 8 * GIO, 4 * GIO)
     d = analyser("llama3.2:3b", LLAMA_3B, POIDS_3B_Q4, "Q4_K_M", b, 131072, type_carte="jetson", bureau_actif=True)
-    categories = {c["categorie"]: c["pistes"] for c in d["solutions"]["categories"]}
-    reduire = categories["Réglage de la requête (immédiat)"][0]
-    assert reduire["action"]["type"] == "contexte" and reduire["rentre"]
-    kv = categories["Réglage du serveur Ollama (redémarrage)"]
-    assert "OLLAMA_KV_CACHE_TYPE=q8_0" in kv[0]["commande"] and kv[1]["gain_go"] > kv[0]["gain_go"]
-    assert any("graphique" in p["titre"] for p in categories["Libérer de la mémoire"])
+    categories = {c["cle"]: c["pistes"] for c in d["solutions"]["categories"]}
+    assert list(categories)[:2] == ["requete", "serveur"]  # de la plus simple à la plus lourde
+    reduire = categories["requete"][0]
+    assert reduire["type"] == "contexte" and reduire["rentre"] and reduire["valeur"] < 131072
+    kv = categories["serveur"]
+    assert "OLLAMA_KV_CACHE_TYPE=q8_0" in kv[0]["commande"]["contenu"] and kv[1]["gain_go"] > kv[0]["gain_go"]
+    assert any(p["type"] == "bureau" for p in categories["memoire"])
+    petits = categories["modele"]
+    assert petits and all(p["parametres_mds"] < 0.8 * 3.21 for p in petits) and petits[0]["taille_go"] > 0
 
 
 def test_autre_materiel_seulement_plus_grand_que_la_carte():
     b = budget("jetson", int(7.4 * GIO), 4 * GIO)
     d = analyser("llama3.2:3b", LLAMA_3B, POIDS_3B_Q4, "Q4_K_M", b, 131072, type_carte="jetson")
-    materiel = next(c["pistes"] for c in d["solutions"]["categories"] if c["categorie"] == "Autre matériel")
-    assert all("8GB" not in p["titre"] for p in materiel)
+    materiel = next(c["pistes"] for c in d["solutions"]["categories"] if c["cle"] == "materiel")
+    assert all(p["memoire_go"] > 8 for p in materiel)
 
 
 def test_plateforme_reconnue_depuis_le_device_tree():
@@ -139,3 +142,11 @@ def test_variantes_coherentes_avec_le_fichier_reel():
     liste = candidats("qwen2.5:0.5b", qwen, 397_807_936, "Q4_K_M")
     plus_precis = [c for c in liste if c["bits"] > 4.89]
     assert all(c["poids"] > 397_807_936 for c in plus_precis)
+
+
+def test_projecteur_compte_dans_les_poids_de_toutes_les_versions():
+    vision = {**LLAMA_3B, "projecteur_octets": 850_000_000}
+    assert estimer(vision, POIDS_3B_Q4, 4096)["poids"] == POIDS_3B_Q4 + 850_000_000
+    b = budget("jetson", 8 * GIO, 6 * GIO)
+    for r in explorer("x:3b", vision, POIDS_3B_Q4, "Q4_K_M", b, 4096):
+        assert r["estimation"]["poids"] >= r["fichier"]["poids"] + 850_000_000
