@@ -451,6 +451,7 @@ async function chargerCatalogue() {
   const bandeau = $("bandeau-carte");
   if (bandeau) {
     const morceaux = t("bandeau", go(c.budget_go.utilisable, 1), c.charges.length, etat.installes.length, derniersParModele().length);
+    if (c.calibration?.n) morceaux.push(t("cal_bandeau", c.calibration.n));
     bandeau.replaceChildren(el("span", "nom-carte", etat.metrique?.machine || ""), ...morceaux.map((x) => el("span", "aide", x)));
   }
   rendreFiltres();
@@ -752,7 +753,9 @@ function blocVerdict(d) {
 
   const jauge = el("div", "jauge");
   const haut = el("div", "jauge-haut");
-  haut.append(el("strong", null, go(e.total, 2)), el("span", null, `${t("necessaire")} · ${t("sur_utilisables", go(b.utilisable, 2))}`));
+  const cal = d.calibration;
+  haut.append(el("strong", null, go(cal?.active ? cal.total_go : e.total, 2)), el("span", null, `${t("necessaire")} · ${t("sur_utilisables", go(b.utilisable, 2))}`));
+  if (cal?.active) haut.append(el("span", "etiq", t("cal_corrige", go(e.total, 2), cal.n)));
   const echelle = Math.max(e.total, b.utilisable) * 1.04 || 1;
   const barre = el("div", "jauge-barre");
   for (const [cle, val] of [["poids", e.poids], ["kv", e.cache_kv], ["buffers", e.buffers]]) {
@@ -1276,7 +1279,7 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
   let reponse = "", tokens = 0, premier = null;
   try {
     const r = await poster("/api/chat", { modele: ch.modele, conversation_id: ch.conv.id, num_ctx: ch.conv.num_ctx,
-      systeme: ch.conv.systeme || "", temperature: ch.conv.temperature, messages: ch.messages.map(({ role, content }) => ({ role, content })) });
+      systeme: ch.conv.systeme || "", temperature: ch.conv.temperature, type_kv: etat.typeKv, messages: ch.messages.map(({ role, content }) => ({ role, content })) });
     if (!r.ok) throw new Error(await messageErreur(r));
     for await (const evt of ndjson(r)) {
       if (evt.type === "token") {
@@ -1681,6 +1684,45 @@ function pageMateriel() {
   zone.replaceChildren(titrePage(t("mat_titre"), t("mat_sous")));
   rendreMateriel();
   chargerDiagnostic().then(() => rendreMateriel());
+  json("/api/calibration").then((c) => { etat.calibration = c; rendreMateriel(); }).catch(() => {});
+}
+
+function panneauCalibration() {
+  const c = etat.calibration;
+  const p = el("section", "panneau");
+  p.style.marginTop = "16px";
+  p.append(el("h2", "titre-bloc", t("cal_titre")), el("p", "explication", t("cal_explication")));
+  if (!c) return p;
+  p.append(el("p", c.active ? "charge-oui" : "aide", t("cal_n", c.n, c.min_points)));
+  if (c.coef) {
+    p.append(el("p", "mono", t("cal_coef", go(c.coef.fixe_go, 2), f(c.coef.a, 2), f(c.coef.b, 2))),
+      el("p", "aide", t("cal_erreur", f(c.erreur_brute_pct, 1), f(c.erreur_corrigee_pct, 1))));
+  }
+  if (!c.observations.length) { p.append(el("p", "aide", t("cal_vide"))); return p; }
+  const table = el("table", "tableau");
+  table.style.marginTop = "10px";
+  const tr = el("tr");
+  t("cal_colonnes").forEach((lib, i) => tr.append(el("th", i ? "num" : "", lib)));
+  const thead = el("thead");
+  thead.append(tr);
+  const tbody = el("tbody");
+  for (const o of c.observations) {
+    const l = el("tr");
+    const ecart = ((o.mesure_go - o.estime_go) / o.estime_go) * 100;
+    l.append(el("td", "mono", o.modele), el("td", "num", ctxCourt(o.num_ctx)), el("td", "num", go(o.estime_go, 2)),
+      el("td", "num", go(o.mesure_go, 2)), el("td", "num", `${ecart > 0 ? "+" : ""}${f(ecart, 0)} %`));
+    tbody.append(l);
+  }
+  table.append(thead, tbody);
+  const eff = bouton(t("cal_effacer"), "petit danger", async () => {
+    if (!(await confirmer(t("cal_effacer"), t("cal_confirmer"), t("effacer")))) return;
+    await fetch("/api/calibration", { method: "DELETE" });
+    etat.calibration = await json("/api/calibration");
+    rendreMateriel();
+  });
+  eff.style.marginTop = "10px";
+  p.append(table, eff);
+  return p;
 }
 
 function rendreMateriel() {
@@ -1751,7 +1793,7 @@ function rendreMateriel() {
     for (const a of etat.journal.slice().reverse()) dl.append(el("dt", null, a.texte), el("dd", null, a.heure));
     journal.append(dl);
   }
-  contenu.push(journal);
+  contenu.push(journal, panneauCalibration());
   zone.replaceChildren(...contenu);
 }
 

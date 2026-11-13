@@ -11,40 +11,45 @@ Une appli d'hébergement d'IA locale, à la manière d'Open WebUI, pensée pour 
 - **Chat** : conversations enregistrées sur la carte (SQLite), instructions du système, température et contexte par conversation. Sous chaque réponse, une barre montre où est passé le temps (chargement, lecture du message, génération) et une phrase claire la résume (par exemple « 21 tok/s, environ 4 fois votre vitesse de lecture »). À droite : vitesse en direct, premier mot détaillé, mémoire estimée et mesurée, CPU, GPU, température, puissance, score.
 - **Mes modèles** : modèles installés, chargés ou non, mémoire réelle, part sur le GPU, compte à rebours avant déchargement, espace disque ; décharger ou supprimer.
 - **Bancs d'essai et score edgefit** : le même test pour chaque modèle (contexte 4K, 128 tokens, trois textes de même longueur). Score sur 100 = 60 % vitesse (2 à 20 tokens/s) + 40 % délai du premier mot (10 s à 0,5 s), plafonné à 60 s'il reste moins de 10 % de mémoire libre ; pas de score si le modèle ne tient pas. L'énergie (tokens par joule) est affichée à part.
+- **Calibration** : après chaque réponse (et chaque banc d'essai), edgefit compare la mémoire réellement occupée selon Ollama à son estimation et ajuste la formule propre à la carte (réel ≈ fixe + a × poids + b × cache KV, en partant de la formule de llm_modelfit). À partir de 3 réglages mesurés, les verdicts utilisent l'estimation corrigée ; l'estimation brute reste affichée à côté. Détail, coefficients et erreur avant/après sur la page Matériel.
 - **Matériel** : identité de la carte (JetPack, mode d'énergie, Ollama), répartition de la mémoire, courbes en direct, journal des alertes.
 - **Réglages** : langue, contexte par défaut, cache KV déclaré du serveur Ollama (avec les commandes pour le changer), santé de la carte, export et effacement des données.
 
 Interface en français et en anglais, utilisable sur PC et sur téléphone. Les conversations et les bancs d'essai sont dans `~/.local/share/edgefit/edgefit.db` (variable `EDGEFIT_DB` pour un autre fichier).
 
-## Installation sur la Jetson (ou le Raspberry Pi)
+## Installation (Jetson, Raspberry Pi ou PC Linux)
 
-Les commandes se lancent sur la carte elle-même (clavier et écran, ou terminal déjà ouvert dessus).
+Une seule commande, à lancer sur la machine qui fera tourner les modèles :
 
-1. **Ollama**, le moteur qui fait tourner les modèles. Son script d'installation détecte la Jetson et installe la version qui utilise le GPU :
-   ```bash
-   curl -fsSL https://ollama.com/install.sh | sh
-   ```
-2. **uv**, l'outil qui installe edgefit dans son propre environnement. Il télécharge aussi une version récente de Python si celle de la carte est trop ancienne (JetPack 5 n'a que Python 3.8) :
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   source ~/.bashrc
-   ```
-3. **edgefit** :
-   ```bash
-   uv tool install git+https://github.com/yassine674/edgefit.git
-   ```
-4. **Vérifier la carte**, puis lancer :
-   ```bash
-   edgefit diagnostic
-   edgefit
-   ```
-   Le terminal affiche l'adresse à ouvrir depuis le PC, par exemple `http://192.168.1.42:8000/?token=...`.
+```bash
+curl -fsSL https://raw.githubusercontent.com/yassine674/edgefit/main/install.sh | sh
+```
 
-Mise à jour : `uv tool upgrade edgefit`. Désinstallation : `uv tool uninstall edgefit`.
+Le script vérifie la machine, l'horloge (une date fausse fait refuser tous les certificats HTTPS) et l'accès à internet, installe `uv` dans le dossier personnel, **demande** avant d'installer Ollama (son installateur officiel demande le mot de passe administrateur), installe edgefit (avec un Python récent si celui de la machine est trop ancien, par exemple sur JetPack 5) puis lance `edgefit diagnostic`.
 
-`edgefit diagnostic` vérifie Python, la version de JetPack, tegrastats, le mode d'énergie, la mémoire, qu'Ollama répond, qu'il utilise bien le GPU et que son port n'est pas ouvert au réseau, l'espace disque et l'accès au registre. Il ne modifie rien : il indique quoi corriger.
+Options, à placer après `sh -s --` :
 
-Options de `edgefit` : `--port` (défaut 8000), `--hote` (défaut 0.0.0.0, joignable depuis le réseau local), `--ollama` (défaut `http://127.0.0.1:11434`). Le port d'Ollama n'a pas besoin d'être ouvert sur le réseau : seul edgefit lui parle.
+```bash
+curl -fsSL https://raw.githubusercontent.com/yassine674/edgefit/main/install.sh | sh -s -- --service
+```
+
+| Option | Effet |
+|---|---|
+| `--service` | démarre edgefit automatiquement (service systemd de l'utilisateur) |
+| `--sans-ollama` | ne propose pas d'installer Ollama |
+| `--version v0.1.0` | installe une version précise (tag ou branche) |
+| `--oui` | répond oui aux questions |
+| `--essai` | affiche ce qui serait fait, sans rien exécuter |
+
+Ensuite :
+
+```bash
+edgefit              # lance le serveur et affiche l'adresse à ouvrir depuis le PC
+edgefit adresse      # réaffiche cette adresse (utile quand edgefit tourne en service)
+edgefit diagnostic   # vérifie Python, JetPack, tegrastats, Ollama, GPU, disque, réseau
+```
+
+Mise à jour : relancer la commande d'installation (ou `uv tool upgrade edgefit`). Désinstallation : `uv tool uninstall edgefit`.
 
 ## Sécurité
 

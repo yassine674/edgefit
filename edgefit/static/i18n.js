@@ -647,6 +647,16 @@ Object.assign(TEXTES.fr, {
   m_kv_token: "Cache KV par token", m_calcule: "calculé", m_courbe: "Mémoire selon le contexte (estimation)",
   m_mesure: "Mesuré sur cette carte",
   pile_tient: (format) => `Tient en ${format}`,
+  cal_titre: "Calibration de l'estimation",
+  cal_explication: "Après chaque réponse, edgefit compare la mémoire réellement occupée (selon Ollama) à son estimation, et ajuste la formule propre à cette carte : réel ≈ fixe + a × poids + b × cache KV. Départ : fixe 0, a = b = 1,1. La correction s'applique aux verdicts à partir de 3 réglages mesurés.",
+  cal_n: (n, min) => n >= min ? `${n} réglages mesurés : correction active` : `${n} / ${min} réglages mesurés : correction pas encore active`,
+  cal_coef: (fx, a, b) => `réel ≈ ${fx} + ${a} × poids + ${b} × cache KV`,
+  cal_erreur: (avant, apres) => `erreur moyenne : ${avant} % avec la formule de départ, ${apres} % après correction`,
+  cal_colonnes: ["Modèle", "Contexte", "Estimé", "Mesuré", "Écart"],
+  cal_vide: "Aucune mesure pour l'instant : discutez avec un modèle ou lancez un banc d'essai.",
+  cal_effacer: "Effacer les mesures de calibration", cal_confirmer: "Les mesures seront supprimées et l'estimation reviendra à la formule de départ.",
+  cal_corrige: (brut, n) => `corrigé par ${n} mesures · brut ${brut}`,
+  cal_bandeau: (n) => `calibration : ${n} mesures`,
 });
 
 Object.assign(TEXTES.en, {
@@ -707,6 +717,16 @@ Object.assign(TEXTES.en, {
   m_kv_token: "KV cache per token", m_calcule: "computed", m_courbe: "Memory by context (estimate)",
   m_mesure: "Measured on this board",
   pile_tient: (format) => `Fits in ${format}`,
+  cal_titre: "Estimate calibration",
+  cal_explication: "After each answer, edgefit compares the memory actually used (reported by Ollama) to its estimate, and fits this board's own formula: real ≈ fixed + a × weights + b × KV cache. Start: fixed 0, a = b = 1.1. The correction applies to verdicts once 3 settings have been measured.",
+  cal_n: (n, min) => n >= min ? `${n} settings measured: correction active` : `${n} / ${min} settings measured: correction not active yet`,
+  cal_coef: (fx, a, b) => `real ≈ ${fx} + ${a} × weights + ${b} × KV cache`,
+  cal_erreur: (avant, apres) => `mean error: ${avant} % with the starting formula, ${apres} % after correction`,
+  cal_colonnes: ["Model", "Context", "Estimated", "Measured", "Gap"],
+  cal_vide: "No measurement yet: chat with a model or run a benchmark.",
+  cal_effacer: "Clear calibration measurements", cal_confirmer: "Measurements will be deleted and the estimate will go back to the starting formula.",
+  cal_corrige: (brut, n) => `corrected by ${n} measurements · raw ${brut}`,
+  cal_bandeau: (n) => `calibration: ${n} measurements`,
 });
 TEXTES.fr.conv_aucune = "Les conversations restent sur cette carte.";
 TEXTES.en.conv_aucune = "Conversations stay on this board.";
