@@ -751,3 +751,40 @@ button.acc-installe:hover { border-color: #464b5a; }
 @media (max-width: 760px) { .accueil-portes { grid-template-columns: minmax(0, 1fr); } .accueil-hero { margin-top: 8px; } .accueil-hero h1 { font-size: 21px; } .acc-ligne { grid-template-columns: minmax(0, 1fr) auto; } .acc-ligne .aide { display: none; } }
 .porte-atelier { margin-top: 16px; max-width: 620px; }
 .at-option:disabled { opacity: 0.5; cursor: default; } .at-option:disabled:hover { background: transparent; border-color: var(--line-2); }
+.recu.note-lecture { color: var(--t2); margin-top: 4px; }
+
+/* micro */
+.micro { align-self: flex-end; color: var(--t2); position: relative; }
+.micro svg { width: 18px; height: 18px; }
+.bouton.micro.enregistre, .bouton.micro.enregistre:hover { color: #fff; background: #c2333b; border-color: #c2333b; }
+.micro.enregistre::after { content: attr(data-duree); position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%); font: 11px var(--mono); color: var(--t1); background: var(--s3); border: 1px solid var(--line-2); border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
+.micro.transcrit { opacity: 0.6; cursor: progress; }
+@media (prefers-reduced-motion: no-preference) { .micro.enregistre { animation: pulse-micro 1.4s ease-in-out infinite; } @keyframes pulse-micro { 50% { box-shadow: 0 0 0 5px rgba(194, 51, 59, 0.25); } } }
+
+/* page Images */
+.im-installer { display: grid; gap: 12px; max-width: 760px; }
+.im-installer h2 { margin: 0; font-size: 16px; }
+.im-installer .aide { margin: 0; }
+.im-installer > .bouton { justify-self: start; }
+.im-form { display: grid; gap: 12px; max-width: 980px; }
+.im-form textarea { width: 100%; font-size: 14.5px; }
+.im-form > .acts { justify-content: space-between; align-items: center; }
+.im-plus > summary { cursor: pointer; color: var(--t2); }
+.im-plus[open] { display: grid; gap: 12px; }
+.im-plus[open] > summary { margin-bottom: 2px; }
+.im-reglages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.im-resultat { margin: 14px 0; max-width: 980px; }
+.im-resultat .panneau { display: grid; gap: 8px; }
+.im-resultat .panneau .aide { margin: 0; }
+.im-grille { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.im-vignette { margin: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--s1); overflow: hidden; display: grid; }
+.im-vignette img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; background: var(--s2); }
+.im-vignette figcaption { display: grid; gap: 4px; padding: 10px 12px 12px; }
+.im-vignette figcaption > span:first-child { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.im-vignette figcaption .aide { font: 11.5px var(--mono); }
+.im-vignette .acts { justify-content: flex-start; margin-top: 4px; }
+.im-derniere { max-width: 560px; grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 760px) { .im-reglages { grid-template-columns: minmax(0, 1fr); } }
+.im-form > .acts { gap: 12px; flex-wrap: wrap; }
+.im-form > .acts .bouton { margin-left: auto; }
+.im-derniere { max-width: 420px; }

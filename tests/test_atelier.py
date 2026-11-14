@@ -99,3 +99,31 @@ def test_vrais_noms_des_autres_quantifications(cas):
     # choisir cette version : taille exacte lue dans le registre, plus grosse que le Q4_K_M
     e = c.post("/api/atelier", json={"modele": "llama3.2:3b-instruct-q8_0"}).json()
     assert e["format"] == "Q8_0" and e["source"] == "registre" and e["estimation_go"]["poids"] > poids["Q4_K_M"]["fichier_go"]
+
+
+def test_gpu_detecte_seulement_s_il_existe(cas):
+    from edgefit.metriques.generique import FournisseurGenerique
+    c, _ = cas
+    assert c.post("/api/atelier", json={"modele": "qwen2.5:0.5b"}).json()["gpu_detecte"] is True  # Jetson simulée
+    pc = FournisseurGenerique("pc-test")
+    pc._nvidia = None  # PC sans carte NVIDIA (GPU intégré Intel) : Ollama tourne sur le processeur
+    c2 = TestClient(creer_app(pc, OllamaFactice(pause_s=0), "j", RegistreFactice(), CatalogueFactice()))
+    c2.cookies.set(NOM_COOKIE, "j")
+    assert c2.post("/api/atelier", json={"modele": "qwen2.5:0.5b"}).json()["gpu_detecte"] is False
+
+
+def test_le_chat_garde_le_modele_charge():
+    import asyncio
+    import httpx
+    from edgefit.ollama import ClientOllama
+    recus = []
+
+    def repondre(requete):
+        recus.append(json.loads(requete.content))
+        return httpx.Response(200, text=json.dumps({"done": True, "message": {"content": ""}, "eval_count": 1, "eval_duration": 1}) + "\n")
+
+    async def scenario():
+        client = ClientOllama(transport=httpx.MockTransport(repondre))
+        return [e async for e in client.discuter("m", [{"role": "user", "content": "x"}], {}, None, "30m")]
+    asyncio.run(scenario())
+    assert recus[0]["keep_alive"] == "30m"

@@ -18,6 +18,8 @@ dependencies = [
 dev = ["pytest", "httpx"]
 # voix (lecture des réponses) : Piper et onnxruntime, ≈ 80 Mo ; les voix se téléchargent depuis l'appli
 voix = ["piper-tts>=1.5"]
+# parole (micro -> texte) : faster-whisper (CTranslate2), ≈ 110 Mo ; les modèles Whisper se téléchargent depuis l'appli
+parole = ["faster-whisper>=1.1", "huggingface_hub>=0.23"]
 
 [project.scripts]
 edgefit = "edgefit.cli:main"

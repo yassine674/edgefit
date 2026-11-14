@@ -146,7 +146,7 @@ class OllamaFactice:
         self.crees[nom] = {"base": base, "systeme": systeme, "parametres": parametres or {}, "quantifier": quantifier}
         yield {"type": "fin"}
 
-    async def discuter(self, nom, messages, options=None, outils=None):
+    async def discuter(self, nom, messages, options=None, outils=None, garder=None):
         if all(m["nom"] != nom for m in self._installes):
             yield {"type": "erreur", "erreur": f"model '{nom}' not found"}
             return

@@ -23,6 +23,7 @@ const etat = {
   outils: lireOutils(),
   voix: null,
   voixAuto: pref("edgefit.voix.auto", "0") === "1",
+  oral: pref("edgefit.oral", "0") === "1",
   ollama: { disponible: null },
   installes: [],
   charges: [],
@@ -532,6 +533,7 @@ const GROUPES = {
   modeles: [["accueil", "og_accueil"], ["decouvrir", "og_decouvrir"], ["choisir", "og_choisir"], ["atelier", "og_atelier"], ["modeles", "og_installes"]],
   mesurer: [["bancs", "og_bancs"], ["comparer", "og_comparer"], ["endurance", "og_endurance"], ["fiche", "og_fiche"]],
   carte: [["materiel", "og_materiel"], ["reglages", "og_reglages"]],
+  studio: [["images", "og_images"]],
 };
 function groupeDe(page) {
   if (page === "modele") return "modeles";
@@ -553,7 +555,7 @@ function rendreOnglets(page) {
 
 function afficher() {
   let { page, params } = route();
-  const pages = ["decouvrir", "modele", "chat", "modeles", "comparer", "bancs", "materiel", "reglages", "choisir", "endurance", "fiche", "accueil", "atelier"];
+  const pages = ["decouvrir", "modele", "chat", "modeles", "comparer", "bancs", "materiel", "reglages", "choisir", "endurance", "fiche", "accueil", "atelier", "images"];
   if (!pages.includes(page)) {
     location.replace("#/accueil");
     return;
@@ -566,7 +568,7 @@ function afficher() {
   rendreOnglets(page);
   montrerFantome(null);
   lecteur.arreter();
-  const titres = { accueil: "nav_g_modeles", atelier: "nav_g_modeles", decouvrir: "nav_g_modeles", modeles: "nav_g_modeles", choisir: "nav_g_modeles", modele: "nav_g_modeles",
+  const titres = { images: "nav_g_studio", accueil: "nav_g_modeles", atelier: "nav_g_modeles", decouvrir: "nav_g_modeles", modeles: "nav_g_modeles", choisir: "nav_g_modeles", modele: "nav_g_modeles",
     bancs: "nav_g_mesurer", comparer: "nav_g_mesurer", endurance: "nav_g_mesurer", fiche: "nav_g_mesurer", materiel: "nav_g_carte", reglages: "nav_g_carte", chat: "nouvelle_conv" };
   $("titre-mobile").textContent = t(titres[page]);
   const zone = $("page");
@@ -574,7 +576,7 @@ function afficher() {
   scrollTo(0, 0);
   ({ decouvrir: pageDecouvrir, modele: () => pageModele(params.nom), chat: () => pageChat(params.id),
     modeles: pageModeles, comparer: pageComparer, bancs: pageBancs, materiel: pageMateriel, reglages: pageReglages,
-    choisir: pageChoisir, endurance: pageEndurance, fiche: pageFiche, accueil: pageAccueil, atelier: () => pageAtelier(params.nom) })[page]();
+    choisir: pageChoisir, endurance: pageEndurance, fiche: pageFiche, accueil: pageAccueil, atelier: () => pageAtelier(params.nom), images: pageImages })[page]();
   rendreConversations();
 }
 addEventListener("hashchange", afficher);
@@ -782,6 +784,168 @@ function carteModele(m, u, reco = false) {
   actions.append(det);
   carte.append(tete, el("p", "desc", m.description), etiqs, mem, bas, actions);
   return carte;
+}
+
+// --- page Images : générer des images sur la carte (stable-diffusion.cpp + SD-Turbo) ---------
+
+async function pageImages() {
+  const zone = $("page");
+  zone.className = "page images";
+  let e;
+  try { e = await json("/api/images"); } catch (err) { zone.replaceChildren(el("p", "erreur-bloc", err.message)); return; }
+  const tete = titrePage(t("im_titre"), t("im_sous"));
+  const pret = e.moteur && e.modele.installe;
+  if (!pret) {
+    const p = el("section", "panneau im-installer");
+    p.append(el("h2", null, t("im_installer_titre")));
+    if (!e.binaires) {
+      p.append(el("p", "aide", t("im_plateforme")), blocCommande(T().im_compiler), el("p", "aide", t("im_compiler_apres")));
+      zone.replaceChildren(tete, p);
+      return;
+    }
+    p.append(el("p", "aide", t("im_installer_texte", e.modele.taille_mo, e.modele.memoire_go, e.modele.licence)));
+    const choix = el("div", "obj-puces");
+    let variante = "cpu";
+    const puces = Object.entries(e.moteurs).map(([v, m]) => {
+      const b = el("button", "puce", `${T().im_variantes[v]} · ${m.taille_mo} Mo`);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(v === variante));
+      b.addEventListener("click", () => { variante = v; puces.forEach((x) => x.setAttribute("aria-pressed", String(x === b))); });
+      return b;
+    });
+    choix.append(...puces);
+    const etatI = el("div", "progres-carte");
+    const go1 = bouton(t("im_installer", e.modele.taille_mo + e.moteurs.cpu.taille_mo), "principal", async () => {
+      go1.disabled = true;
+      const barre = el("div", "barre-progres");
+      const s = el("span");
+      barre.append(s);
+      const txt = el("span", "aide");
+      etatI.replaceChildren(txt, barre);
+      try {
+        const r = await poster("/api/images/installer", { variante });
+        if (!r.ok) throw new Error(await messageErreur(r));
+        for await (const evt of ndjson(r)) {
+          if (evt.type === "progression") { s.style.width = `${(evt.fait / evt.total) * 100}%`; txt.textContent = `${f(evt.fait / 1e6, 0)} / ${f(evt.total / 1e6, 0)} Mo`; }
+          else if (evt.type === "erreur") throw new Error(evt.erreur);
+        }
+        pageImages();
+      } catch (err) { etatI.replaceChildren(el("p", "erreur-bloc", err.message)); go1.disabled = false; }
+    });
+    p.append(champ(t("im_moteur"), choix), el("p", "aide", t("im_variantes_aide")), go1, etatI);
+    zone.replaceChildren(tete, p);
+    return;
+  }
+
+  const I = etat.images ??= { prompt: "", negatif: "", taille: 512, etapes: 1, graine: "" };
+  const form = el("section", "panneau im-form");
+  const prompt = el("textarea");
+  prompt.rows = 3;
+  prompt.maxLength = 1000;
+  prompt.placeholder = t("im_placeholder");
+  prompt.value = I.prompt;
+  prompt.setAttribute("aria-label", t("im_description"));
+  prompt.addEventListener("input", () => { I.prompt = prompt.value; });
+  const negatif = el("input");
+  negatif.type = "text";
+  negatif.placeholder = t("im_negatif_aide");
+  negatif.value = I.negatif;
+  negatif.addEventListener("input", () => { I.negatif = negatif.value; });
+  const taille = el("select");
+  for (const tl of e.tailles) taille.append(new Option(`${tl} × ${tl}`, tl));
+  taille.value = I.taille;
+  taille.addEventListener("change", () => { I.taille = Number(taille.value); });
+  const etapes = el("select");
+  for (const n of [1, 2, 4]) etapes.append(new Option(T().im_etapes[n], n));
+  etapes.value = I.etapes;
+  etapes.addEventListener("change", () => { I.etapes = Number(etapes.value); });
+  const graine = el("input");
+  graine.type = "text";
+  graine.inputMode = "numeric";
+  graine.placeholder = t("im_graine_aide");
+  graine.value = I.graine;
+  graine.addEventListener("input", () => { I.graine = graine.value.replace(/\D/g, ""); });
+  const reglages = el("div", "im-reglages");
+  reglages.append(champ(t("im_taille"), taille), champ(t("im_etapes_lib"), etapes), champ(t("im_graine"), graine));
+  const plus = el("details", "im-plus");
+  const sp = el("summary", null, t("im_plus"));
+  plus.append(sp, champ(t("im_negatif"), negatif), reglages);
+  const resultat = el("div", "im-resultat");
+  resultat.setAttribute("aria-live", "polite");
+  const bGo = bouton(t("im_generer"), "principal", () => generer());
+  const ligneGo = el("div", "acts");
+  ligneGo.append(el("span", "aide", t("im_moteur_actif", T().im_variantes[e.moteur] || e.moteur)), bGo);
+  form.append(champ(t("im_description"), prompt), plus, ligneGo);
+  const galerie = el("section", "im-galerie");
+  zone.replaceChildren(tete, form, resultat, galerie);
+  prompt.addEventListener("keydown", (ev) => { if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) generer(); });
+
+  const vignette = (im) => {
+    const fig = el("figure", "im-vignette");
+    const a = el("a");
+    a.href = `/api/images/fichier/${encodeURIComponent(im.fichier)}`;
+    a.target = "_blank";
+    a.rel = "noopener";
+    const img = el("img");
+    img.src = a.href;
+    img.alt = im.prompt;
+    img.loading = "lazy";
+    a.append(img);
+    const leg = el("figcaption");
+    leg.append(el("span", null, im.prompt), el("span", "aide", `${im.largeur}×${im.hauteur} · ${T().im_etapes[im.etapes] || im.etapes} · ${f(im.duree_s, 0)} s · #${im.graine}`));
+    const acts = el("div", "acts");
+    const dl = el("a", "bouton petit", t("im_telecharger"));
+    dl.href = a.href;
+    dl.download = im.fichier;
+    acts.append(bouton(t("im_reprendre"), "petit", () => {
+      Object.assign(I, { prompt: im.prompt, negatif: im.negatif || "", taille: im.largeur, etapes: im.etapes, graine: String(im.graine) });
+      pageImages(); scrollTo(0, 0);
+    }), dl, bouton(t("mm_supprimer"), "petit danger", async () => {
+      const r = await fetch(`/api/images/fichier/${encodeURIComponent(im.fichier)}`, { method: "DELETE" });
+      if (r.ok) chargerGalerie(); else alert(await messageErreur(r));
+    }));
+    leg.append(acts);
+    fig.append(a, leg);
+    return fig;
+  };
+  async function chargerGalerie() {
+    let liste = [];
+    try { liste = await json("/api/images/galerie"); } catch { /* sans importance */ }
+    const st = el("div", "section-titre");
+    st.append(el("span", "libelle", t("im_galerie", liste.length)));
+    const g = el("div", "im-grille");
+    g.append(...liste.map(vignette));
+    galerie.replaceChildren(...(liste.length ? [st, g] : []));
+  }
+  let encours = false;
+  async function generer() {
+    if (encours || !prompt.value.trim()) { prompt.focus(); return; }
+    encours = true;
+    bGo.disabled = true;
+    const etatG = el("p", "aide", t("im_preparation"));
+    const barre = el("div", "barre-progres");
+    const s = el("span");
+    barre.append(s);
+    const p = el("section", "panneau");
+    p.append(etatG, barre);
+    resultat.replaceChildren(p);
+    const debut = performance.now();
+    const tic = setInterval(() => { if (!s.style.width || s.style.width === "0%") etatG.textContent = t("im_chargement", duree((performance.now() - debut) / 1000)); }, 500);
+    try {
+      const r = await poster("/api/images/generer", { prompt: prompt.value.trim(), negatif: negatif.value.trim(), largeur: I.taille, hauteur: I.taille,
+        etapes: I.etapes, graine: I.graine === "" ? null : Number(I.graine) });
+      if (!r.ok) throw new Error(await messageErreur(r));
+      for await (const evt of ndjson(r)) {
+        if (evt.type === "decharge") montrerBanniere(t("im_decharge", evt.modeles.join(", ")));
+        else if (evt.type === "etape") { s.style.width = `${(evt.n / evt.total) * 100}%`; etatG.textContent = t("im_etape", evt.n, evt.total, duree((performance.now() - debut) / 1000)); }
+        else if (evt.type === "erreur") throw new Error(evt.erreur);
+        else if (evt.type === "fin") { resultat.replaceChildren(vignette(evt)); resultat.firstChild.classList.add("im-derniere"); chargerGalerie(); }
+      }
+    } catch (err) { resultat.replaceChildren(el("p", "erreur-bloc", err.message)); }
+    finally { clearInterval(tic); encours = false; bGo.disabled = false; }
+  }
+  chargerGalerie();
+  prompt.focus();
 }
 
 // --- page d'accueil : chercher un modèle, ou fabriquer le sien -------------------------------
@@ -1009,6 +1173,10 @@ async function pageAtelier(nomDemande) {
     cats.push(categorie("contexte", t("contexte_option", A.ctx), [el("p", "aide", t("at_ctx_aide")),
       ...C.contexte.map((o) => ligneOption(o, t("contexte_option", o.valeur), t("at_kv_detail", go(o.kv_go, 2), ""), () => { A.ctx = o.valeur; relancer(); }))]));
     // 4. GPU / CPU
+    if (!etude.gpu_detecte) {
+      delete A.params.num_gpu;  // sans GPU utilisable, Ollama ignore ce réglage
+      cats.push(categorie("gpu", t("at_gpu_aucun_court"), [el("p", "aide", t("at_gpu_aucun"))]));
+    }
     const glisse = el("input");
     glisse.type = "range"; glisse.min = 0; glisse.max = etude.couches || 99; glisse.step = 1;
     glisse.value = A.params.num_gpu ?? glisse.max;
@@ -1017,7 +1185,7 @@ async function pageAtelier(nomDemande) {
     glisse.setAttribute("aria-label", T().at_cats.gpu[0]);
     glisse.addEventListener("input", () => { if (Number(glisse.value) >= Number(glisse.max)) delete A.params.num_gpu; else A.params.num_gpu = Number(glisse.value); majCouches(); dessinerResume(); });
     majCouches();
-    cats.push(categorie("gpu", A.params.num_gpu === undefined ? t("at_gpu_defaut") : `${A.params.num_gpu} / ${etude.couches}`,
+    if (etude.gpu_detecte) cats.push(categorie("gpu", A.params.num_gpu === undefined ? t("at_gpu_defaut") : `${A.params.num_gpu} / ${etude.couches}`,
       [el("p", "aide", t(etude.memoire_unifiee ? "at_gpu_aide_unifiee" : "at_gpu_aide")), glisse, lecture]));
     // 5. vitesse, 6. génération
     for (const cle of ["vitesse", "generation"]) {
@@ -1727,6 +1895,7 @@ async function pageChat(id) {
   temp.addEventListener("change", enregistrer);
   panneauReglages.append(champ(t("chat_systeme"), systeme), droite, choixOutils());
   if (voixPrete()) { const v = caseVoixAuto(); v.classList.add("voix-chat"); panneauReglages.append(v); }
+  if (ecoutePrete()) { const o = caseOral(); o.classList.add("voix-chat"); panneauReglages.append(o); }
 
   const messages = el("div", "messages");
   messages.id = "messages";
@@ -1764,7 +1933,7 @@ async function pageChat(id) {
   joindre.addEventListener("click", () => fichier.click());
   const vignettes = el("div", "vignettes");
   vignettes.id = "vignettes";
-  form.append(joindre, fichier, champTexte, envoyer);
+  form.append(joindre, fichier, champTexte, boutonMicro(champTexte, form), envoyer);
   cc.append(ctxLigne, vignettes, form, el("p", "aide", t("entree_aide")));
   champTexte.addEventListener("paste", (e) => {
     const images = [...(e.clipboardData?.files || [])].filter((x) => x.type.startsWith("image/"));
@@ -1962,6 +2131,8 @@ function anatomie(m) {
   for (const [avant, fort, apres] of T().recu(m, f)) recu.append(avant, el("strong", null, fort), apres);
   if (chargement) recu.append(el("span", "froid", t("an_froid")));
   bloc.append(barre, leg, recu);
+  // lecture du message longue : l'expliquer (c'est elle qui retarde le premier mot, pas l'écriture)
+  if (lecture > 8 && m.tokens_prompt) bloc.append(el("p", "recu note-lecture", t("an_lecture_lente", f(lecture, 0), f(m.tokens_prompt, 0), f(m.debit_prefill_tokens_s || 0, 0))));
   // énergie : seulement si la carte a un capteur de puissance (jamais une valeur inventée)
   if (m.joules_par_token) {
     const e = el("p", "recu energie");
@@ -2082,7 +2253,9 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
   const tx = bloc.querySelector(".texte");
   defiler();
   let reponse = "", tokens = 0, premier = null, lu = 0;
-  const lireAuto = etat.voixAuto && voixPrete();
+  // conversation à l'oral : la réponse à une question dictée est lue, même sans la lecture automatique
+  const lireAuto = (etat.voixAuto || ch.oralSuivant) && voixPrete();
+  ch.oralSuivant = false;
   if (lireAuto) lecteur.commencer(bloc.querySelector(".ecouter"), false);
   const jetonLecture = lecteur.jeton;
   try {
@@ -2391,6 +2564,128 @@ function montrerBanniere(texte) {
   b.textContent = texte;
   b.hidden = false;
   setTimeout(() => { if (b.textContent === texte) { b.hidden = true; chargerOllama(); } }, 6000);
+}
+
+// --- parole : le micro, Whisper sur la carte, puis la question écrite (ou envoyée) -------------
+// Le navigateur n'ouvre le micro que sur une page sûre : https, ou http://localhost sur la machine
+// elle-même. Depuis un téléphone en http://<ip>, il faut lancer edgefit avec --https.
+
+async function chargerEcoute() {
+  try { etat.ecoute = await json("/api/ecoute"); } catch { etat.ecoute = null; }
+}
+function tailleEcoute() {
+  const m = etat.ecoute?.modeles || {};
+  const voulue = pref("edgefit.ecoute.taille", "base");
+  return m[voulue]?.installe ? voulue : Object.keys(m).find((k) => m[k].installe) || null;
+}
+function ecoutePrete() { return !!(etat.ecoute?.moteur && tailleEcoute()); }
+
+const micro = {
+  enregistreur: null, morceaux: [], bouton: null, debut: 0, minuterie: 0,
+  async basculer(bouton, champTexte, form) {
+    if (this.enregistreur) { this.enregistreur.stop(); return; }
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) { montrerBanniere(t("mic_page_sure", location.port || "8765")); return; }
+    let flux;
+    try { flux = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
+    catch (err) { montrerBanniere(err.name === "NotAllowedError" ? t("mic_refuse") : t("mic_absent")); return; }
+    lecteur.arreter();  // ne pas s'enregistrer soi-même pendant que la réponse est lue
+    const type = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm"].find((x) => MediaRecorder.isTypeSupported?.(x)) || "";
+    this.enregistreur = new MediaRecorder(flux, type ? { mimeType: type } : undefined);
+    this.morceaux = [];
+    this.bouton = bouton;
+    this.debut = performance.now();
+    bouton.classList.add("enregistre");
+    bouton.setAttribute("aria-label", t("mic_arreter"));
+    const tic = () => { bouton.dataset.duree = duree((performance.now() - this.debut) / 1000); this.minuterie = setTimeout(tic, 250); };
+    tic();
+    this.enregistreur.addEventListener("dataavailable", (e) => { if (e.data.size) this.morceaux.push(e.data); });
+    this.enregistreur.addEventListener("stop", async () => {
+      clearTimeout(this.minuterie);
+      flux.getTracks().forEach((p) => p.stop());
+      const audio = new Blob(this.morceaux, { type: this.enregistreur.mimeType || "audio/webm" });
+      this.enregistreur = null;
+      bouton.classList.remove("enregistre");
+      bouton.classList.add("transcrit");
+      bouton.setAttribute("aria-label", t("mic_parler"));
+      delete bouton.dataset.duree;
+      try {
+        const langue = etat.langue === "en" ? "en" : "fr";
+        const r = await fetch(`/api/ecoute/transcrire?taille=${tailleEcoute()}&langue=${langue}`, { method: "POST", body: audio, headers: { "Content-Type": audio.type } });
+        if (!r.ok) throw new Error(await messageErreur(r));
+        const res = await r.json();
+        if (!res.texte) { montrerBanniere(t("mic_rien")); return; }
+        champTexte.value = (champTexte.value.trim() ? `${champTexte.value.trim()} ` : "") + res.texte;
+        champTexte.dispatchEvent(new Event("input"));
+        if (etat.oral) { etat.chat.oralSuivant = true; form.requestSubmit(); } else champTexte.focus();
+      } catch (err) { montrerBanniere(err.message); }
+      finally { bouton.classList.remove("transcrit"); }
+    });
+    this.enregistreur.start(250);
+  },
+};
+function boutonMicro(champTexte, form) {
+  const b = el("button", "bouton petit micro");
+  b.type = "button";
+  b.id = "micro";
+  b.hidden = !ecoutePrete();
+  b.append(icone("micro"));
+  b.setAttribute("aria-label", t("mic_parler"));
+  b.title = t("mic_parler");
+  b.addEventListener("click", () => micro.basculer(b, champTexte, form));
+  return b;
+}
+function caseOral() {
+  const l = el("label", "cmp-option");
+  const cb = el("input");
+  cb.type = "checkbox";
+  cb.checked = etat.oral;
+  cb.addEventListener("change", () => { etat.oral = cb.checked; garder("edgefit.oral", cb.checked ? "1" : "0"); });
+  l.append(cb, el("span", null, t(voixPrete() ? "mic_oral" : "mic_oral_sans_voix")));
+  return l;
+}
+function panneauEcoute() {
+  const p = el("section", "panneau panneau-voix");
+  const rendre = () => {
+    p.replaceChildren(el("h2", null, t("mic_titre")));
+    if (!etat.ecoute) { p.append(el("p", "aide", T().erreurs.reseau)); return; }
+    if (!etat.ecoute.moteur) {
+      p.append(el("p", "aide", t("mic_sans_moteur")), blocCommande(`uv tool install --force --python 3.12 "edgefit[voix,parole] @ git+https://github.com/yassine674/edgefit"`),
+        el("p", "aide", t("voix_sans_moteur_apres")));
+      return;
+    }
+    p.append(el("p", "aide", t("mic_aide")));
+    for (const [taille, m] of Object.entries(etat.ecoute.modeles)) {
+      const ligne = el("div", "ligne-voix");
+      const g = el("div");
+      g.append(el("strong", null, `Whisper ${taille}`), el("span", "aide desc", T().mic_modeles[taille](m.taille_mo)));
+      const acts = el("div", "acts");
+      if (m.installe) {
+        const choisi = tailleEcoute() === taille;
+        acts.append(choisi ? el("span", "pastille ok", t("mic_utilise")) : bouton(t("mic_utiliser"), "petit", () => { garder("edgefit.ecoute.taille", taille); rendre(); }));
+      } else {
+        const etatT = el("span", "aide");
+        const b = bouton(t("voix_telecharger", m.taille_mo), "petit principal", async () => {
+          b.disabled = true;
+          etatT.textContent = t("mic_telechargement", m.taille_mo);
+          try {
+            const r = await poster("/api/ecoute/telecharger", { taille });
+            if (!r.ok) throw new Error(await messageErreur(r));
+            for await (const evt of ndjson(r)) if (evt.type === "erreur") throw new Error(evt.erreur);
+            await chargerEcoute();
+            if (!pref("edgefit.ecoute.taille", "")) garder("edgefit.ecoute.taille", taille);
+            rendre();
+          } catch (err) { etatT.className = "raison bad"; etatT.textContent = err.message; b.disabled = false; }
+        });
+        acts.append(etatT, b);
+      }
+      ligne.append(g, acts);
+      p.append(ligne);
+    }
+    if (!window.isSecureContext) p.append(el("p", "raison bad", t("mic_page_sure", location.port || "8765")));
+    p.append(caseOral());
+  };
+  rendre();
+  return p;
 }
 
 async function chargerVoix() {
@@ -3400,6 +3695,7 @@ function ligneVerif(v) {
 }
 
 async function pageReglages() {
+  await chargerEcoute();
   const zone = $("page");
   zone.className = "page";
   const gauche = el("div", "reglages-grille");
@@ -3420,7 +3716,7 @@ async function pageReglages() {
   }
   const p3 = el("section", "panneau");
   p3.append(choixOutils());
-  gauche.append(p1, p2, p3, panneauVoix());
+  gauche.append(p1, p2, p3, panneauVoix(), panneauEcoute());
 
   const droite = el("div", "reglages-grille");
   const sante = el("section", "panneau");
@@ -3488,6 +3784,6 @@ $("bouton-langue").addEventListener("click", () => changerLangue(etat.langue ===
 (async function demarrer() {
   appliquerLangue();
   connecter();
-  await Promise.all([chargerOllama(), chargerConversations(), chargerBancs(), chargerVoix()]);
+  await Promise.all([chargerOllama(), chargerConversations(), chargerBancs(), chargerVoix(), chargerEcoute()]);
   afficher();
 })();

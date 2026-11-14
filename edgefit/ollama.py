@@ -200,10 +200,12 @@ class ClientOllama:
                 return
             yield {"type": "progression", "statut": evt.get("status"), "fait": evt.get("completed"), "total": evt.get("total")}
 
-    async def discuter(self, nom, messages, options=None, outils=None):
+    async def discuter(self, nom, messages, options=None, outils=None, garder=None):
         debut = time.perf_counter()
         premier = None
         corps = {"model": nom, "messages": messages, "stream": True, "options": options or {}}
+        if garder:
+            corps["keep_alive"] = garder  # durée pendant laquelle Ollama garde le modèle chargé après la réponse
         if outils:
             corps["tools"] = outils
         async for evt in self._flux("/api/chat", corps):

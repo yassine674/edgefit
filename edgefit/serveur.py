@@ -22,6 +22,8 @@ from .compatibilite import OCTETS_KV, _verdict, analyser, budget, estimer, plate
 from .ollama import GO, ModeleInconnu, OllamaIndisponible, nom_valide
 from .registre import Registre, RegistreErreur
 from .voix import LANGUES, TEXTE_MAX, Voix, VoixErreur
+from .ecoute import AUDIO_MAX_OCTETS, TAILLES, Ecoute, EcouteErreur
+from .images import MODELE as MODELE_IMAGES, MOTEURS, PROMPT_MAX, TAILLES as TAILLES_IMAGES, Images
 from .securite import NOM_COOKIE, jeton_valide, origine_autorisee
 
 DOSSIER_STATIC = Path(__file__).parent / "static"
@@ -57,6 +59,11 @@ class DemandeCreation(BaseModel):
 
 # image jointe : base64 brut (sans « data:image/...; »), au plus ≈ 6 Mo ; la page les réduit à 1024 px
 ImageB64 = Annotated[str, Field(min_length=16, max_length=8_000_000, pattern=r"^[A-Za-z0-9+/]+={0,2}$")]
+
+
+# Ollama décharge un modèle 5 min après la dernière réponse ; le recharger coûte 5 à 10 s (plus sur
+# une carte SD). Pendant une conversation, on le garde 30 min.
+GARDER_CHARGE = "30m"
 
 
 class Message(BaseModel):
@@ -112,6 +119,23 @@ class ModifConversation(BaseModel):
 
 class DemandeVoix(BaseModel):
     langue: Literal[LANGUES]
+
+
+class DemandeEcoute(BaseModel):
+    taille: Literal[TAILLES]
+
+
+class DemandeInstallationImages(BaseModel):
+    variante: Literal[tuple(MOTEURS)] = "cpu"
+
+
+class DemandeImage(BaseModel):
+    prompt: str = Field(min_length=1, max_length=PROMPT_MAX)
+    negatif: str = Field(default="", max_length=PROMPT_MAX)
+    largeur: Literal[TAILLES_IMAGES] = 512
+    hauteur: Literal[TAILLES_IMAGES] = 512
+    etapes: int = Field(default=1, ge=1, le=8)
+    graine: int | None = Field(default=None, ge=0, le=2 ** 31 - 1)
 
 
 class DemandeLecture(BaseModel):
@@ -187,11 +211,13 @@ def _avec_score(entree):
     return {**entree, "score": s}
 
 
-def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, intervalle_s=1.0, voix=None):
+def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, intervalle_s=1.0, voix=None, ecoute=None, images=None):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     registre = registre or Registre()
     catalogue = catalogue or Catalogue()
     voix = voix or Voix()
+    ecoute = ecoute or Ecoute()
+    images = images or Images()
     occupation = Occupation()
     carte = getattr(fournisseur, "carte", None) or fournisseur.machine
 
@@ -239,7 +265,7 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
             if not jeton_valide(propose, jeton):
                 return HTMLResponse(PAGE_ACCES_REFUSE, status_code=403)
             reponse = RedirectResponse(str(request.url.remove_query_params("token")), status_code=303)
-            reponse.set_cookie(NOM_COOKIE, jeton, httponly=True, samesite="strict")
+            reponse.set_cookie(NOM_COOKIE, jeton, httponly=True, samesite="strict", secure=request.url.scheme == "https")
             return reponse
         if not jeton_valide(request.cookies.get(NOM_COOKIE), jeton):
             if request.url.path.startswith("/api/"):
@@ -385,7 +411,7 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
                     definitions = boite.definitions(autorises) if tour < outils.MAX_TOURS else None
                     appels, texte_tour = [], []
                     async for evt in _avec_memoire_chargee(ollama, demande.modele,
-                                                           ollama.discuter(demande.modele, historique, options, definitions)):
+                                                           ollama.discuter(demande.modele, historique, options, definitions, GARDER_CHARGE)):
                         if evt["type"] == "appels":
                             appels += evt["appels"]
                             continue
@@ -703,6 +729,12 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
             publies = await registre.variantes_ollama(demande.modele)
             for o in etude["categories"]["poids"]:
                 o["nom"] = o["nom"] or publies.get(o["format"])
+        # GPU utilisé ? Jetson : toujours ; PC : un GPU NVIDIA lu par nvidia-smi, ou un modèle chargé dont
+        # Ollama a mis une partie en mémoire GPU (Vulkan, ROCm...). GPU intégré Intel : seulement si Ollama
+        # tourne avec OLLAMA_VULKAN=1 et OLLAMA_IGPU_ENABLE=1.
+        mesure = await asyncio.to_thread(fournisseur.lire)
+        etude["gpu_detecte"] = (fournisseur.type_carte == "jetson" or mesure.get("gpu_pct") is not None
+                                or any(m.get("taille_vram") for m in charges))
         etude.update(source=source, rendement_mesures=n, plateforme=plateforme["name"] if plateforme else None,
                      capacites=infos.get("capacites"),
                      charges=[{"nom": m["nom"], "taille_go": m["taille"] / GO} for m in charges],
@@ -797,6 +829,78 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
             statut = {"moteur_absent": 501, "voix_absente": 409, "vide": 422}.get(e.code, 500)
             raise HTTPException(statut, {"code": e.code, "message": str(e)}) from e
         return Response(audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+    # --- images (stable-diffusion.cpp) ---------------------------------------------------------
+    @app.get("/api/images")
+    async def etat_images():
+        return images.etat()
+
+    @app.post("/api/images/installer")
+    async def installer_images(demande: DemandeInstallationImages):
+        return _ndjson(ollama, images.installer(demande.variante))
+
+    @app.post("/api/images/generer")
+    async def generer_image(demande: DemandeImage):
+        if occupation.banc:
+            raise HTTPException(409, {"code": "carte_occupee", "message": "la carte est déjà utilisée (banc d'essai)"})
+
+        async def etapes():
+            # place pour le modèle d'images : si la mémoire libre ne suffit pas, on décharge les modèles
+            # de langue (Ollama les rechargera à la prochaine question)
+            b, charges, _ = await budget_actuel()
+            besoin = MODELE_IMAGES["memoire_go"] * GO
+            if b["disponible"] - b["marge"] < besoin and charges and not occupation.total():
+                for m in charges:
+                    await ollama.decharger(m["nom"])
+                yield {"type": "decharge", "modeles": [m["nom"] for m in charges]}
+            occupation.banc = "images"
+            try:
+                async for evt in images.generer(demande.prompt, demande.negatif, demande.largeur, demande.hauteur,
+                                                demande.etapes, demande.graine):
+                    yield evt
+            finally:
+                occupation.banc = None
+        return _ndjson(ollama, etapes())
+
+    @app.get("/api/images/galerie")
+    async def galerie_images():
+        return await asyncio.to_thread(images.galerie)
+
+    @app.get("/api/images/fichier/{nom}")
+    async def fichier_image(nom: str):
+        chemin = images.chemin_image(nom)
+        if chemin is None:
+            raise HTTPException(404, "image introuvable")
+        return FileResponse(chemin, media_type="image/png")
+
+    @app.delete("/api/images/fichier/{nom}")
+    async def supprimer_image(nom: str):
+        if not await asyncio.to_thread(images.supprimer, nom):
+            raise HTTPException(404, "image introuvable")
+        return {"supprime": nom}
+
+    # --- écoute (Whisper) : la parole devient la question --------------------------------------
+    @app.get("/api/ecoute")
+    async def etat_ecoute():
+        return ecoute.etat()
+
+    @app.post("/api/ecoute/telecharger")
+    async def telecharger_ecoute(demande: DemandeEcoute):
+        return _ndjson(ollama, ecoute.telecharger(demande.taille))
+
+    @app.post("/api/ecoute/transcrire")
+    async def transcrire(request: Request, taille: Literal[TAILLES] = "base", langue: Literal[LANGUES] | None = None):
+        # l'audio arrive tel quel dans le corps de la requête (webm/opus du navigateur), sans formulaire
+        if int(request.headers.get("content-length") or 0) > AUDIO_MAX_OCTETS:
+            raise HTTPException(413, {"code": "trop_long", "message": "enregistrement trop long"})
+        octets = await request.body()
+        if len(octets) > AUDIO_MAX_OCTETS:
+            raise HTTPException(413, {"code": "trop_long", "message": "enregistrement trop long"})
+        try:
+            return await ecoute.transcrire(octets, taille, langue)
+        except EcouteErreur as e:
+            statut = {"moteur_absent": 501, "modele_absent": 409, "vide": 422, "audio": 422, "trop_long": 413}.get(e.code, 500)
+            raise HTTPException(statut, {"code": e.code, "message": str(e)}) from e
 
     @app.websocket("/ws/metriques")
     async def flux_metriques(ws: WebSocket):

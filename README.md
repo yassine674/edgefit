@@ -4,7 +4,7 @@ L'outil de mesure des LLM sur carte embarquée (NVIDIA Jetson, Raspberry Pi, ou 
 
 ## Fonctionnalités
 
-Le menu a trois groupes : **Modèles** (Rechercher, Catalogue, Pour mon besoin, Atelier, Installés), **Mesurer** (Bancs d'essai, Comparer, Endurance, Fiche) et **Carte** (Matériel, Réglages). Le chat est toujours à portée, avec la liste des conversations.
+Le menu a quatre groupes : **Modèles** (Rechercher, Catalogue, Pour mon besoin, Atelier, Installés), **Studio** (Images), **Mesurer** (Bancs d'essai, Comparer, Endurance, Fiche) et **Carte** (Matériel, Réglages). Le chat est toujours à portée, avec la liste des conversations.
 
 - **Découvrir** : 26 modèles adaptés aux petites cartes, présentés en cartes avec leur verdict pour *cette* carte (tient, juste, trop gros), la mémoire nécessaire, la vitesse maximale théorique et le score mesuré. Filtres, recommandations, téléchargement en un clic. Au survol, la place du modèle apparaît dans la barre mémoire de la carte. La recherche interroge aussi Hugging Face (dépôts GGUF, avec le choix de la version).
 - **Rechercher** (page d'accueil) : un champ de recherche qui interroge à la fois les modèles installés, le catalogue et Hugging Face, et trois entrées : parcourir le catalogue, trouver pour son besoin, créer son modèle.
@@ -16,6 +16,8 @@ Le menu a trois groupes : **Modèles** (Rechercher, Catalogue, Pour mon besoin, 
 - **Images** : avec un modèle de vision (moondream, qwen2.5vl, llava…, reconnu grâce aux capacités annoncées par Ollama), un bouton permet de joindre jusqu'à 4 images ; on peut aussi les coller (Ctrl+V) ou les glisser. Elles sont réduites à 1024 px dans le navigateur avant l'envoi, et ne sont pas gardées sur la carte (seul leur nombre est noté).
 - **Mes modèles** : modèles installés, chargés ou non, mémoire réelle, part sur le GPU, compte à rebours avant déchargement, espace disque ; décharger ou supprimer.
 - **Outils** : le modèle peut demander à edgefit d'exécuter des fonctions pendant une réponse : état de la carte (mémoire, températures, puissance), modèles installés, vérifier si un modèle tient en mémoire, calculatrice exacte, date et heure. Aucun outil n'est autorisé au départ : on les coche un par un (Réglages, ou réglages du chat). Les outils ne font que lire (aucune commande, aucun fichier modifié, aucun accès à internet) ; le serveur refuse tout nom hors de sa liste et tout outil non coché, limite chaque outil à 5 s et une question à 4 allers-retours. Chaque appel s'affiche dans la réponse avec son résultat. Il faut un modèle qui sait appeler des outils (Qwen 2.5 et 3, Llama 3.1 et 3.2…) ; sinon edgefit le dit et le modèle répond sans.
+- **Parole et conversation à l'oral** (optionnelle) : un bouton micro dans le chat ; Whisper (faster-whisper) écrit la question sur la carte, sans internet. En mode « conversation à l'oral », la question part dès la fin de l'enregistrement et la réponse est lue par Piper. Deux modèles à télécharger depuis Réglages : `base` (≈ 145 Mo ; 6 s de parole écrites en 1,6 s sur un i7-8650U) et `small` (≈ 485 Mo, environ trois fois plus lent, plus précis). S'installe avec l'extra `parole` (`edgefit[voix,parole]`). Le navigateur n'ouvre le micro que sur une page sûre : `http://localhost` sur la machine elle-même, ou `edgefit --https` (certificat auto-signé, créé avec openssl) depuis un téléphone.
+- **Images** (Studio) : génération d'images sur la carte avec stable-diffusion.cpp (licence MIT) et SD-Turbo en GGUF 8 bits (1,9 Go, une image en 1 à 4 étapes). Moteur et modèle téléchargés depuis la page, à une version fixée, vérifiés par SHA-256 ; version processeur ou Vulkan (GPU intégré possible). Le moteur est lancé sans shell : la description ne peut pas devenir une commande. Si la mémoire manque, les modèles de langue sont déchargés le temps de l'image. Galerie avec reprise des réglages. Pas de binaire tout prêt pour ARM (Jetson, Raspberry Pi) : compiler stable-diffusion.cpp puis indiquer le chemin avec `EDGEFIT_SD`.
 - **Voix** (optionnelle) : les réponses lues à voix haute par Piper, sur la carte, sans internet. Bouton Écouter sous chaque réponse, ou lecture automatique pendant que la réponse s'écrit (phrase par phrase ; les blocs de code et le Markdown ne sont pas lus ; voix choisie selon la langue de la réponse). Voix française `fr_FR-siwis-medium` (CC-BY 4.0) et anglaise `en_US-lessac-medium`, ≈ 63 Mo chacune, téléchargées depuis la page Réglages et vérifiées par leur empreinte SHA-256. Piper s'installe avec l'extra `voix` (`edgefit[voix]`, ≈ 80 Mo) ; l'installateur pose la question.
 - **Comparer** : la même question posée à deux modèles installés, l'un après l'autre (deux modèles chargés ensemble ne tiennent souvent pas en mémoire). Réponses côte à côte avec leurs mesures, puis un bilan en valeurs médianes : vitesse, premier mot, chargement, mémoire réelle, durée, score du banc d'essai. Options : température 0 (réponses reproductibles) et déchargement avant chaque réponse (pour comparer aussi le temps de chargement). La qualité ne se mesure pas : on donne son avis sous chaque question. Rien n'est enregistré.
 - **Bancs d'essai et score edgefit** : le même test pour chaque modèle (contexte 4K, 128 tokens, trois textes de même longueur). Score sur 100 = 60 % vitesse (2 à 20 tokens/s) + 40 % délai du premier mot (10 s à 0,5 s), plafonné à 60 s'il reste moins de 10 % de mémoire libre ; pas de score si le modèle ne tient pas. L'énergie (joules par token, mesurée pendant l'écriture) est affichée à part.
@@ -61,6 +63,23 @@ edgefit diagnostic   # vérifie Python, JetPack, tegrastats, Ollama, GPU, disque
 
 Mise à jour : relancer la commande d'installation (ou `uv tool upgrade edgefit`). Désinstallation : `uv tool uninstall edgefit`.
 
+## GPU intégré (Intel, AMD) sur un PC
+
+Ollama utilise d'office les cartes NVIDIA et AMD et les Jetson. Un GPU intégré (par exemple Intel UHD 620) n'est utilisé que si on l'active, par Vulkan (expérimental dans Ollama) :
+
+```bash
+sudo systemctl edit ollama
+# ajouter, entre les lignes de commentaires indiquées :
+[Service]
+Environment="OLLAMA_VULKAN=1"
+Environment="OLLAMA_IGPU_ENABLE=1"
+# enregistrer, puis :
+sudo systemctl restart ollama
+journalctl -u ollama -b --no-pager | grep "inference compute"    # doit citer le GPU (library=Vulkan)
+```
+
+Pour revenir en arrière : `sudo systemctl revert ollama && sudo systemctl restart ollama`. Un GPU intégré partage la mémoire du PC : il ne donne pas plus de place, et le gain est surtout sur la lecture des longs messages. Mesurez avant et après avec un banc d'essai.
+
 ## Sécurité
 
 - Un jeton aléatoire est généré à chaque démarrage. La première visite avec `?token=...` pose un cookie `HttpOnly` et `SameSite=Strict`, puis le jeton disparaît de l'URL.
@@ -95,5 +114,7 @@ Organisation du code (`edgefit/`) :
 | `energie.py` | puissance relevée pendant une réponse : joules par token, brut et au-dessus du repos |
 | `endurance.py` | test d'endurance : débit par fenêtre de 5 s, résumé début / fin, détection du bridage |
 | `atelier.py` | atelier d'optimisation : options chiffrées par catégorie, paramètres autorisés d'un modèle créé |
+| `ecoute.py` | parole -> texte : Whisper (faster-whisper), décodage audio, modèles à révision fixée |
+| `images.py` | génération d'images : stable-diffusion.cpp et SD-Turbo, installation vérifiée, galerie |
 | `objectif.py` | choix d'un modèle par usage et vitesse, rendement appris sur les bancs de la carte |
 | `static/` | la page (HTML, CSS, JavaScript sans bibliothèque externe) |
