@@ -58,6 +58,29 @@ def adresse(nom):
 # format : "GGUF", version (u32), nb de tenseurs (u64), nb de métadonnées (u64), puis
 # chaque métadonnée = clé (chaîne) + type (u32) + valeur. Chaîne = longueur u64 + octets.
 
+def tags_par_format(nom, tags):
+    """{quantification: nom complet} parmi les tags publiés d'un modèle de la bibliothèque Ollama, pour la
+    même taille que `nom` (« llama3.2:3b » -> {"Q8_0": "llama3.2:3b-instruct-q8_0", ...}). Quand plusieurs
+    tags donnent la même quantification, la version « instruct » (celle du tag court) passe avant « text »."""
+    famille, _, tag = nom.partition(":")
+    taille = tag.split("-")[0]
+    if not taille or taille == "latest":
+        return {}
+    trouves = {}
+    for t in tags:
+        morceaux = t.split("-")
+        if morceaux[0] != taille or len(morceaux) < 2:
+            continue
+        quant = morceaux[-1].upper().replace("FP16", "F16")
+        if not re.fullmatch(r"F16|F32|Q\d\w*", quant):
+            continue
+        milieu = morceaux[1:-1]
+        rang = 0 if not milieu else 1 if milieu == ["instruct"] else 3 if "text" in milieu else 2
+        if quant not in trouves or rang < trouves[quant][0]:
+            trouves[quant] = (rang, f"{famille}:{t}")
+    return {q: n for q, (_, n) in trouves.items()}
+
+
 class _Fin(Exception):
     """L'en-tête continue au-delà des octets déjà lus."""
 
@@ -156,6 +179,26 @@ class Registre:
         self._cache = {}     # nom -> (instant, infos)
         self._en_cours = {}  # nom -> tâche : deux demandes simultanées ne lisent le registre qu'une fois
 
+    async def variantes_ollama(self, nom):
+        """Autres quantifications publiées pour ce modèle de la bibliothèque Ollama : {format: nom}.
+        Le registre n'a pas de liste de tags : on lit la page publique ollama.com/library/<modèle>/tags.
+        Vide pour un dépôt Hugging Face (noms prévisibles), un modèle personnel, ou hors ligne."""
+        famille = nom.partition(":")[0]
+        if "/" in famille or not re.fullmatch(r"[A-Za-z0-9._-]+", famille):
+            return {}
+        cle = f"tags:{famille}"
+        en_cache = self._cache.get(cle)
+        if en_cache and time.monotonic() - en_cache[0] < self.DUREE_CACHE_S:
+            tags = en_cache[1]
+        else:
+            try:
+                r = await self._http.get(f"https://ollama.com/library/{famille}/tags")
+                tags = sorted(set(re.findall(re.escape(famille) + r":([A-Za-z0-9._-]+)", r.text))) if r.status_code == 200 else []
+            except httpx.HTTPError:
+                return {}
+            self._cache[cle] = (time.monotonic(), tags)
+        return tags_par_format(nom, tags)
+
     async def _get(self, url, entetes):
         try:
             r = await self._http.get(url, headers=entetes)
@@ -250,8 +293,23 @@ class RegistreFactice:
     LLAMA_1B = {"architecture": "llama", "nb_param": 1_235_814_400, "num_layers": 16, "num_kv_heads": 8,
                 "head_dim": 64, "context_max": 131072, "sliding_window": None}
 
+    VARIANTES = {"Q8_0": 8.5, "Q3_K_M": 3.9}  # quantifications « publiées » en mode --fake : bits par poids
+
+    async def variantes_ollama(self, nom):
+        from .catalogue import SUGGESTIONS
+        base = nom.split("-instruct-")[0]
+        if not any(e["nom"] == base for e in SUGGESTIONS):
+            return {}
+        return {"Q4_K_M": base, **{q: f"{base}-instruct-{q.lower()}" for q in self.VARIANTES}}
+
     async def infos(self, nom):
         from .catalogue import SUGGESTIONS, VARIANTES_FACTICES
+        base, _, quant = nom.partition("-instruct-")
+        if quant.upper() in self.VARIANTES and any(e["nom"] == base for e in SUGGESTIONS):
+            entree = next(e for e in SUGGESTIONS if e["nom"] == base)
+            taille = int(entree["taille_octets"] * self.VARIANTES[quant.upper()] / 4.85)
+            return {"taille_octets": taille, "format": quant.upper(), "architecture": _architecture_simulee(entree),
+                    "projecteur_octets": 0, "telechargement_octets": taille}
         if nom in self.MODELES:
             m = self.MODELES[nom]
         elif nom in VARIANTES_FACTICES:

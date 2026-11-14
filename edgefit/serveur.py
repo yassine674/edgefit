@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import AfterValidator, BaseModel, Field
 
-from . import banc, calibration, endurance, objectif, outils, stockage
+from . import atelier, banc, calibration, endurance, objectif, outils, stockage
 from .energie import Releveur
 from .catalogue import SUGGESTIONS, Catalogue, depot_valide
 from .diagnostic import dossier_modeles
@@ -44,6 +44,15 @@ NomModele = Annotated[str, AfterValidator(_verifier_nom)]
 
 class DemandeTelechargement(BaseModel):
     nom: NomModele
+
+
+class DemandeCreation(BaseModel):
+    nom: NomModele                      # nom du modèle fabriqué
+    base: NomModele                     # modèle de départ (installé, ou téléchargé d'abord)
+    systeme: str = Field(default="", max_length=8000)
+    parametres: dict[str, float | int | None] = Field(default={}, max_length=20)  # vérifiés par atelier.py
+    quantifier: Literal[atelier.QUANTIFIABLES] | None = None
+    remplacer: bool = False
 
 
 # image jointe : base64 brut (sans « data:image/...; »), au plus ≈ 6 Mo ; la page les réduit à 1024 px
@@ -658,23 +667,79 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
                 occupation.banc = None
         return _ndjson(ollama, phases())
 
-    @app.post("/api/compatibilite")
-    async def compatibilite(demande: DemandeCompatibilite):
-        # 1. le fichier : installé (Ollama connaît sa taille exacte) ou à télécharger (registre)
+    async def infos_modele(nom):
+        """(infos, source) : installé (Ollama connaît la taille exacte) ou à télécharger (registre)."""
         try:
-            infos = await ollama.infos(demande.modele)
+            infos = await ollama.infos(nom)
         except OllamaIndisponible:
             infos = None
         source = "installé"
         if infos is None:
             source = "registre"
             try:
-                infos = await registre.infos(demande.modele)
+                infos = await registre.infos(nom)
             except RegistreErreur as e:
                 raise HTTPException(422, {"code": e.code, "message": str(e)})
         arch = infos["architecture"]
         if not all(arch.get(c) for c in ("num_layers", "num_kv_heads", "head_dim")):
             raise HTTPException(422, {"code": "gguf", "message": "architecture incomplète dans les métadonnées du modèle"})
+        return infos, source
+
+    # --- atelier : essayer des optimisations, puis fabriquer un modèle qui les garde ------------
+    @app.post("/api/atelier")
+    async def etudier(demande: DemandeCompatibilite):
+        infos, source = await infos_modele(demande.modele)
+        b, charges, _ = await budget_actuel()
+        plateforme = await asyncio.to_thread(plateforme_correspondante, getattr(fournisseur, "carte", None))
+        bande = plateforme.get("bandwidth_gb_s") if plateforme else None
+        # rendement appris sur les bancs de cette carte (voir objectif.py)
+        _, _, _, _, modeles = await modeles_carte(4096, "f16")
+        rend, n = objectif.rendement((m["debit_mesure"], m["plafond_tokens_s"]) for m in modeles)
+        etude = await asyncio.to_thread(atelier.etudier, demande.modele, infos["architecture"], infos["taille_octets"],
+                                        infos.get("format"), b, demande.num_ctx, demande.type_kv, bande, rend,
+                                        fournisseur.type_carte)
+        # vrais noms des autres quantifications (bibliothèque Ollama) : sans nom, une option n'est pas cliquable
+        if any(o["nom"] is None for o in etude["categories"]["poids"]):
+            publies = await registre.variantes_ollama(demande.modele)
+            for o in etude["categories"]["poids"]:
+                o["nom"] = o["nom"] or publies.get(o["format"])
+        etude.update(source=source, rendement_mesures=n, plateforme=plateforme["name"] if plateforme else None,
+                     capacites=infos.get("capacites"),
+                     charges=[{"nom": m["nom"], "taille_go": m["taille"] / GO} for m in charges],
+                     telechargement_go=0 if source == "installé" else infos.get("telechargement_octets", infos["taille_octets"]) / GO)
+        return etude
+
+    @app.post("/api/modeles/creer")
+    async def creer_modele(demande: DemandeCreation):
+        try:
+            parametres = atelier.valider_parametres(demande.parametres)
+        except atelier.ErreurAtelier as e:
+            raise HTTPException(422, {"code": "parametre", "message": str(e)})
+        noms = {m["nom"] for m in await installes()}
+        cible = demande.nom if ":" in demande.nom else f"{demande.nom}:latest"
+        if demande.nom == demande.base or cible == demande.base:
+            raise HTTPException(422, {"code": "meme_nom", "message": "le nouveau modèle doit porter un autre nom que sa base"})
+        if (demande.nom in noms or cible in noms) and not demande.remplacer:
+            raise HTTPException(409, {"code": "existe", "message": f"un modèle {demande.nom} existe déjà"})
+
+        async def etapes():
+            if demande.base not in noms:
+                # la base n'est pas sur la carte : on la télécharge d'abord
+                async for evt in ollama.telecharger(demande.base):
+                    if evt["type"] == "fin":
+                        break
+                    yield {**evt, "phase": "telechargement"}
+                    if evt["type"] == "erreur":
+                        return
+            async for evt in ollama.creer(demande.nom, demande.base, demande.systeme, parametres, demande.quantifier):
+                yield {**evt, "phase": "creation"} if evt["type"] != "fin" else {"type": "fin", "nom": cible if cible in {
+                    m["nom"] for m in await installes()} else demande.nom}
+        return _ndjson(ollama, etapes())
+
+    @app.post("/api/compatibilite")
+    async def compatibilite(demande: DemandeCompatibilite):
+        infos, source = await infos_modele(demande.modele)
+        arch = infos["architecture"]
 
         # 2. la mémoire de la carte, mesurée maintenant
         memoire = await asyncio.to_thread(fournisseur.memoire)

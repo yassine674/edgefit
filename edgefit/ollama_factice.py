@@ -64,6 +64,8 @@ class OllamaFactice:
         self._installes = list(MODELES_INITIAUX)
         self._pause = pause_s
         self._charge = None  # (nom, num_ctx) du dernier modèle utilisé
+        self._bases = {}     # modèle créé dans l'atelier -> modèle de base (même architecture)
+        self.crees = {}      # modèle créé -> ce qu'Ollama aurait reçu (pour les tests)
 
     async def version(self):
         return "simulé"
@@ -81,7 +83,7 @@ class OllamaFactice:
         if modele is None:
             return None
         return {"taille_octets": int(modele["taille_go"] * 1024 ** 3),
-                "architecture": _architecture(nom),
+                "architecture": _architecture(self._bases.get(nom, nom)),
                 "format": modele["quantification"] or "Q4_K_M",
                 "capacites": ["completion"] + ([] if nom in self._sans_outils else ["tools"])
                 + (["vision"] if _vision(nom) else [])}
@@ -113,11 +115,35 @@ class OllamaFactice:
             yield {"type": "progression", "statut": "pulling model", "fait": fait, "total": total}
         if all(m["nom"] != nom for m in self._installes):
             from .catalogue import SUGGESTIONS
-            entree = next((e for e in SUGGESTIONS if e["nom"] == nom), None)
+            from .registre import RegistreFactice
+            # « modele:3b-instruct-q8_0 » : une autre quantification d'un modèle du catalogue
+            base, _, quant = nom.partition("-instruct-")
+            entree = next((e for e in SUGGESTIONS if e["nom"] == base), None)
+            bits = RegistreFactice.VARIANTES.get(quant.upper())
             taille = (entree["taille_octets"] + entree["projecteur_octets"]) if entree else total
+            if entree and bits:
+                taille = int(entree["taille_octets"] * bits / 4.85)
+                self._bases[nom] = base
             self._installes.append({"nom": nom, "taille_go": taille / 1024 ** 3, "famille": entree and entree["famille"],
                                     "parametres": entree and entree["parametres"],
-                                    "quantification": entree and entree["format"]})
+                                    "quantification": quant.upper() if bits else entree and entree["format"]})
+        yield {"type": "fin"}
+
+    async def creer(self, nom, base, systeme="", parametres=None, quantifier=None):
+        source = next((m for m in self._installes if m["nom"] == base), None)
+        if source is None:
+            yield {"type": "erreur", "erreur": f"model '{base}' not found"}
+            return
+        if quantifier and (source["quantification"] or "").upper() not in ("F16", "F32"):
+            yield {"type": "erreur", "erreur": "quantization is only supported for F16 and F32 models"}
+            return
+        for statut in ("reading model metadata", "creating system layer", "creating parameters layer", "writing manifest"):
+            await asyncio.sleep(self._pause * 3)
+            yield {"type": "progression", "statut": statut, "fait": None, "total": None}
+        self._installes = [m for m in self._installes if m["nom"] != nom]
+        self._installes.append({**source, "nom": nom, "quantification": quantifier.upper() if quantifier else source["quantification"]})
+        self._bases[nom] = self._bases.get(base, base)
+        self.crees[nom] = {"base": base, "systeme": systeme, "parametres": parametres or {}, "quantifier": quantifier}
         yield {"type": "fin"}
 
     async def discuter(self, nom, messages, options=None, outils=None):

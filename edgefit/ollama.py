@@ -180,6 +180,26 @@ class ClientOllama:
             yield {"type": "progression", "statut": evt.get("status"),
                    "fait": evt.get("completed"), "total": evt.get("total")}
 
+    async def creer(self, nom, base, systeme="", parametres=None, quantifier=None):
+        """Fabrique un modèle à partir d'un autre (API /api/create) : mêmes poids, plus des instructions
+        et des paramètres gardés dans le modèle. `quantifier` (q4_K_M, q8_0...) recompresse les poids ;
+        Ollama ne l'accepte que si la base est en F16 ou F32."""
+        corps = {"model": nom, "from": base, "stream": True}
+        if systeme.strip():
+            corps["system"] = systeme
+        if parametres:
+            corps["parameters"] = parametres
+        if quantifier:
+            corps["quantize"] = quantifier
+        async for evt in self._flux("/api/create", corps):
+            if "error" in evt:
+                yield {"type": "erreur", "erreur": expliquer_erreur(evt["error"])}
+                return
+            if evt.get("status") == "success":
+                yield {"type": "fin"}
+                return
+            yield {"type": "progression", "statut": evt.get("status"), "fait": evt.get("completed"), "total": evt.get("total")}
+
     async def discuter(self, nom, messages, options=None, outils=None):
         debut = time.perf_counter()
         premier = None

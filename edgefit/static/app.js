@@ -529,7 +529,7 @@ function route() {
 }
 // le menu a trois groupes ; chaque groupe a ses onglets en haut de page
 const GROUPES = {
-  modeles: [["decouvrir", "og_decouvrir"], ["choisir", "og_choisir"], ["modeles", "og_installes"]],
+  modeles: [["accueil", "og_accueil"], ["decouvrir", "og_decouvrir"], ["choisir", "og_choisir"], ["atelier", "og_atelier"], ["modeles", "og_installes"]],
   mesurer: [["bancs", "og_bancs"], ["comparer", "og_comparer"], ["endurance", "og_endurance"], ["fiche", "og_fiche"]],
   carte: [["materiel", "og_materiel"], ["reglages", "og_reglages"]],
 };
@@ -553,9 +553,9 @@ function rendreOnglets(page) {
 
 function afficher() {
   let { page, params } = route();
-  const pages = ["decouvrir", "modele", "chat", "modeles", "comparer", "bancs", "materiel", "reglages", "choisir", "endurance", "fiche"];
+  const pages = ["decouvrir", "modele", "chat", "modeles", "comparer", "bancs", "materiel", "reglages", "choisir", "endurance", "fiche", "accueil", "atelier"];
   if (!pages.includes(page)) {
-    location.replace(etat.installes.length ? "#/chat" : "#/decouvrir");
+    location.replace("#/accueil");
     return;
   }
   etat.page = page;
@@ -566,7 +566,7 @@ function afficher() {
   rendreOnglets(page);
   montrerFantome(null);
   lecteur.arreter();
-  const titres = { decouvrir: "nav_g_modeles", modeles: "nav_g_modeles", choisir: "nav_g_modeles", modele: "nav_g_modeles",
+  const titres = { accueil: "nav_g_modeles", atelier: "nav_g_modeles", decouvrir: "nav_g_modeles", modeles: "nav_g_modeles", choisir: "nav_g_modeles", modele: "nav_g_modeles",
     bancs: "nav_g_mesurer", comparer: "nav_g_mesurer", endurance: "nav_g_mesurer", fiche: "nav_g_mesurer", materiel: "nav_g_carte", reglages: "nav_g_carte", chat: "nouvelle_conv" };
   $("titre-mobile").textContent = t(titres[page]);
   const zone = $("page");
@@ -574,7 +574,7 @@ function afficher() {
   scrollTo(0, 0);
   ({ decouvrir: pageDecouvrir, modele: () => pageModele(params.nom), chat: () => pageChat(params.id),
     modeles: pageModeles, comparer: pageComparer, bancs: pageBancs, materiel: pageMateriel, reglages: pageReglages,
-    choisir: pageChoisir, endurance: pageEndurance, fiche: pageFiche })[page]();
+    choisir: pageChoisir, endurance: pageEndurance, fiche: pageFiche, accueil: pageAccueil, atelier: () => pageAtelier(params.nom) })[page]();
   rendreConversations();
 }
 addEventListener("hashchange", afficher);
@@ -601,6 +601,7 @@ function classeTaille(m) {
 }
 
 async function pageDecouvrir() {
+  if (route().params.q) etat.filtres.texte = route().params.q;
   const zone = $("page");
   zone.className = "page";
   const reglages = el("div", "groupe-champs");
@@ -781,6 +782,362 @@ function carteModele(m, u, reco = false) {
   actions.append(det);
   carte.append(tete, el("p", "desc", m.description), etiqs, mem, bas, actions);
   return carte;
+}
+
+// --- page d'accueil : chercher un modèle, ou fabriquer le sien -------------------------------
+
+async function pageAccueil() {
+  const zone = $("page");
+  zone.className = "page accueil";
+  await chargerOllama();
+  const hero = el("section", "accueil-hero");
+  const form = el("form", "accueil-recherche");
+  const champR = el("input");
+  champR.type = "search";
+  champR.placeholder = t("acc_placeholder");
+  champR.setAttribute("aria-label", t("acc_placeholder"));
+  champR.autocomplete = "off";
+  const go1 = el("button", "bouton principal", t("acc_chercher"));
+  go1.type = "submit";
+  form.append(champR, go1);
+  const resultats = el("div", "accueil-resultats");
+  let dernier = "";
+  const chercher = async () => {
+    const q = champR.value.trim();
+    dernier = q;
+    if (q.length < 2) { resultats.replaceChildren(); return; }
+    let d;
+    try { d = await json(`/api/recherche?q=${encodeURIComponent(q)}`); } catch { return; }
+    if (dernier !== q) return;
+    const lignes = [];
+    const ligne = (nom, sous, badge, href) => {
+      const a = el("a", "acc-ligne");
+      a.href = href;
+      a.append(el("span", "mono", nom), el("span", "aide", sous || ""), el("span", "source", badge));
+      return a;
+    };
+    for (const m of d.installes || []) lignes.push(ligne(m.nom, "", t("acc_installe"), `#/modele?nom=${encodeURIComponent(m.nom)}`));
+    for (const m of (d.suggestions || []).slice(0, 6)) lignes.push(ligne(m.nom, m.description, t("acc_catalogue"), `#/modele?nom=${encodeURIComponent(m.nom)}`));
+    for (const h of (d.huggingface || []).slice(0, 6)) lignes.push(ligne(h.depot, t("telechargements", f(h.telechargements, 0)), "Hugging Face", `#/decouvrir?q=${encodeURIComponent(h.depot)}`));
+    if (!lignes.length) lignes.push(el("p", "aide", d.erreur_hf ? t("hf_indisponible") : t("acc_rien")));
+    resultats.replaceChildren(...lignes);
+  };
+  let minuterie = 0;
+  champR.addEventListener("input", () => { clearTimeout(minuterie); minuterie = setTimeout(chercher, 250); });
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = champR.value.trim();
+    if (q) location.hash = `#/decouvrir?q=${encodeURIComponent(q)}`;
+  });
+  hero.append(el("h1", null, t("acc_titre")), el("p", "aide", t("acc_sous")), form, resultats);
+
+  const portes = el("div", "accueil-portes");
+  for (const [cle, href, ic] of [["catalogue", "#/decouvrir", "decouvrir"], ["besoin", "#/choisir", "mesures"], ["atelier", "#/atelier", "reglages"]]) {
+    const a = el("a", "porte");
+    a.href = href;
+    const [titre, texte] = T().acc_portes[cle];
+    a.append(icone(ic), el("strong", null, titre), el("span", "aide", texte));
+    portes.append(a);
+  }
+  const blocs = [hero, portes];
+  if (etat.installes.length) {
+    const st = el("div", "section-titre");
+    st.append(el("span", "libelle", t("acc_sur_la_carte", etat.installes.length)));
+    const liste = el("div", "accueil-installes");
+    for (const m of etat.installes) {
+      const l = el("div", "acc-installe");
+      const g = el("div");
+      g.append(el("div", "mono", m.nom), el("div", "aide", [m.parametres, m.quantification, go(m.taille_go, 2)].filter(Boolean).join(" · ")));
+      const acts = el("div", "acts");
+      const opt = el("a", "bouton petit", t("at_optimiser"));
+      opt.href = `#/atelier?nom=${encodeURIComponent(m.nom)}`;
+      acts.append(bouton(t("a_discuter_court"), "petit principal", () => nouvelleConversationAvec(m.nom)), opt);
+      l.append(g, acts);
+      liste.append(l);
+    }
+    blocs.push(st, liste);
+  }
+  zone.replaceChildren(...blocs);
+  champR.focus();
+}
+
+// --- atelier : essayer des optimisations, puis fabriquer un modèle qui les garde -------------
+// Chaque catégorie est un panneau qui s'ouvre sur de vraies options. Un clic relance le calcul :
+// la colonne de droite montre la mémoire, le verdict et la vitesse du réglage en cours.
+
+const PARAMS_ATELIER = {
+  vitesse: [["num_thread", 1, 256, 1], ["num_batch", 8, 2048, 8]],
+  generation: [["temperature", 0, 2, 0.05], ["top_p", 0, 1, 0.05], ["top_k", 1, 1000, 1], ["repeat_penalty", 0, 2, 0.05], ["num_predict", -1, 32768, 1], ["seed", 0, 2147483647, 1]],
+};
+function pastilleVerdict(v) { return pastille(v === "trop_gros" ? "non" : v === "ok" ? "ok" : "juste"); }
+
+async function pageAtelier(nomDemande) {
+  const zone = $("page");
+  zone.className = "page atelier";
+  await chargerOllama();
+  const A = etat.atelier = (etat.atelier && (!nomDemande || etat.atelier.origine === nomDemande)) ? etat.atelier
+    : { origine: nomDemande || null, base: nomDemande || null, ctx: etat.numCtx, kv: etat.typeKv, params: {}, systeme: "", nom: "", quantifier: null, ouverts: new Set(["poids"]) };
+  const tete = titrePage(t("at_titre"), t("at_sous"));
+
+  // choix du modèle de départ
+  if (!A.base) {
+    const p = el("section", "panneau at-depart");
+    p.append(el("h2", null, t("at_depart")));
+    if (etat.installes.length) {
+      const liste = el("div", "accueil-installes");
+      for (const m of etat.installes) {
+        const b = bouton("", "acc-installe", () => { location.hash = `#/atelier?nom=${encodeURIComponent(m.nom)}`; });
+        b.append(el("span", "mono", m.nom), el("span", "aide", [m.parametres, m.quantification].filter(Boolean).join(" · ")));
+        liste.append(b);
+      }
+      p.append(el("p", "aide", t("at_depart_installe")), liste);
+    }
+    const f2 = el("form", "accueil-recherche");
+    const c = el("input");
+    c.type = "text";
+    c.placeholder = t("at_depart_placeholder");
+    c.setAttribute("aria-label", t("at_depart_placeholder"));
+    const ok = el("button", "bouton", t("at_depart_ok"));
+    ok.type = "submit";
+    f2.append(c, ok);
+    f2.addEventListener("submit", (e) => { e.preventDefault(); if (c.value.trim()) location.hash = `#/atelier?nom=${encodeURIComponent(c.value.trim())}`; });
+    p.append(el("p", "aide", t("at_depart_autre")), f2);
+    zone.replaceChildren(tete, p);
+    return;
+  }
+
+  const gauche = el("div", "at-categories");
+  const droite = el("aside", "at-resume");
+  const corps = el("div", "at-corps");
+  corps.append(gauche, droite);
+  zone.replaceChildren(tete, corps);
+  gauche.append(el("div", "squelette obj-squelette"));
+
+  let etude = null;
+  async function etudier(baseEssai) {
+    const base = baseEssai || A.base;
+    const r = await poster("/api/atelier", { modele: base, num_ctx: A.ctx, type_kv: A.kv });
+    if (!r.ok) throw new Error(await messageErreur(r));
+    etude = await r.json();
+    A.base = base;
+    if (etude.contexte_max && A.ctx > etude.contexte_max) A.ctx = etude.contexte_max;
+  }
+  const relancer = async (baseEssai) => {
+    try { await etudier(baseEssai); A.erreur = null; } catch (err) { A.erreur = err.message; if (!etude) { gauche.replaceChildren(el("p", "erreur-bloc", err.message)); return; } }
+    if (etat.atelier === A && etat.page === "atelier") dessiner();
+  };
+
+  const ligneOption = (o, titre, detail, action, extra) => {
+    const b = el("button", `at-option${o.choisi ? " choisi" : ""}`);
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(!!o.choisi));
+    const g = el("span", "at-opt-g");
+    g.append(el("strong", null, titre), el("span", "aide", detail));
+    const d = el("span", "at-opt-d");
+    d.append(el("span", "mono", go(o.total_go, 2)));
+    if (!o.choisi && Math.abs(o.gain_go) >= 0.005) d.append(el("span", o.gain_go > 0 ? "gain ok" : "gain", `${o.gain_go > 0 ? "−" : "+"}${go(Math.abs(o.gain_go), 2)}`));
+    d.append(pastilleVerdict(o.verdict));
+    b.append(g, d);
+    if (extra) b.append(extra);
+    b.addEventListener("click", action);
+    return b;
+  };
+  const categorie = (cle, valeur, contenu) => {
+    const d = el("details", "at-cat");
+    d.open = A.ouverts.has(cle);
+    d.addEventListener("toggle", () => { if (d.open) A.ouverts.add(cle); else A.ouverts.delete(cle); });
+    const s2 = el("summary");
+    const [titre, aide] = T().at_cats[cle];
+    const g = el("span", "at-cat-titre");
+    g.append(el("strong", null, titre), el("span", "aide", aide));
+    s2.append(g, el("span", "at-cat-valeur", valeur));
+    const c = el("div", "at-cat-corps");
+    c.append(...contenu);
+    d.append(s2, c);
+    return d;
+  };
+  const champNombre = (cle, min, max, pas) => {
+    const i = el("input");
+    // champ texte et non « number » : selon la langue, le navigateur refuse « 0.2 » ou « 0,2 » et vide la case
+    i.type = "text";
+    i.inputMode = pas < 1 ? "decimal" : "numeric";
+    i.placeholder = t("at_defaut");
+    const montrer = () => { i.value = A.params[cle] === undefined ? "" : String(A.params[cle]).replace(".", etat.langue === "fr" ? "," : "."); };
+    montrer();
+    const lire = () => {
+      const avant = A.params[cle];
+      const v = Number(i.value.trim().replace(",", "."));
+      if (i.value.trim() === "" || !isFinite(v)) delete A.params[cle];
+      else A.params[cle] = Math.min(max, Math.max(min, pas >= 1 ? Math.round(v) : v));
+      // seulement si la valeur a changé : redessiner à la fin de la saisie ferait perdre le clic sur « Créer »
+      if (A.params[cle] !== avant) dessinerResume();
+    };
+    i.addEventListener("input", lire);                              // pris en compte à chaque frappe
+    i.addEventListener("change", () => { lire(); montrer(); });    // puis remis au propre (bornes, virgule)
+    const [lib, aide] = T().at_params[cle];
+    const c = champ(lib, i);
+    c.append(el("span", "aide", aide));
+    return c;
+  };
+
+  function dessiner() {
+    const C = etude.categories;
+    const cats = [];
+    // 1. poids
+    const poids = C.poids.map((o) => ligneOption(o, o.format, `${f(o.bits, 1)} bits/poids · ${t("at_fichier", go(o.fichier_go, 2))}${o.exact ? "" : ` · ${t("at_estime")}`}${o.plafond_tokens_s ? ` · ≤ ${f(o.plafond_tokens_s * etude.rendement, 0)} tok/s` : ""}`,
+      () => { if (!o.choisi && o.nom) relancer(o.nom); }));
+    C.poids.forEach((o, k) => { if (!o.nom && !o.choisi) { poids[k].disabled = true; poids[k].title = t("at_non_publie"); poids[k].querySelector(".at-opt-g .aide").append(` · ${t("at_non_publie")}`); } });
+    const blocPoids = [el("p", "aide", t("at_poids_aide")), ...poids];
+    if (A.erreur) blocPoids.push(el("p", "erreur-bloc", t("at_variante_absente", A.erreur)));
+    if (etude.quantifiable) {
+      const sel = el("select");
+      sel.append(new Option(t("at_quant_non"), ""), ...["q8_0", "q4_K_M", "q4_K_S"].map((q) => new Option(q.toUpperCase(), q)));
+      sel.value = A.quantifier || "";
+      sel.addEventListener("change", () => { A.quantifier = sel.value || null; dessinerResume(); });
+      const c = champ(t("at_quant"), sel);
+      c.append(el("span", "aide", t("at_quant_aide")));
+      blocPoids.push(c);
+    }
+    cats.push(categorie("poids", etude.format || "–", blocPoids));
+    // 2. cache KV
+    const kvs = C.cache_kv.map((o) => ligneOption(o, o.valeur, t("at_kv_detail", go(o.kv_go, 2), T().at_kv_qualite[o.valeur]),
+      () => { A.kv = o.valeur; relancer(); }));
+    const blocKv = [el("p", "aide", t("at_kv_aide")), ...kvs];
+    if (A.kv !== "f16") blocKv.push(el("p", "aide", t("at_kv_serveur")), blocCommande(commandeKv(A.kv)));
+    cats.push(categorie("cache_kv", A.kv, blocKv));
+    // 3. contexte
+    cats.push(categorie("contexte", t("contexte_option", A.ctx), [el("p", "aide", t("at_ctx_aide")),
+      ...C.contexte.map((o) => ligneOption(o, t("contexte_option", o.valeur), t("at_kv_detail", go(o.kv_go, 2), ""), () => { A.ctx = o.valeur; relancer(); }))]));
+    // 4. GPU / CPU
+    const glisse = el("input");
+    glisse.type = "range"; glisse.min = 0; glisse.max = etude.couches || 99; glisse.step = 1;
+    glisse.value = A.params.num_gpu ?? glisse.max;
+    const lecture = el("p", "at-couches");
+    const majCouches = () => { lecture.textContent = A.params.num_gpu === undefined ? t("at_gpu_tout", etude.couches) : t("at_gpu_part", A.params.num_gpu, etude.couches); };
+    glisse.setAttribute("aria-label", T().at_cats.gpu[0]);
+    glisse.addEventListener("input", () => { if (Number(glisse.value) >= Number(glisse.max)) delete A.params.num_gpu; else A.params.num_gpu = Number(glisse.value); majCouches(); dessinerResume(); });
+    majCouches();
+    cats.push(categorie("gpu", A.params.num_gpu === undefined ? t("at_gpu_defaut") : `${A.params.num_gpu} / ${etude.couches}`,
+      [el("p", "aide", t(etude.memoire_unifiee ? "at_gpu_aide_unifiee" : "at_gpu_aide")), glisse, lecture]));
+    // 5. vitesse, 6. génération
+    for (const cle of ["vitesse", "generation"]) {
+      const n = PARAMS_ATELIER[cle].filter(([k]) => A.params[k] !== undefined).length;
+      const grille = el("div", "at-grille");
+      grille.append(...PARAMS_ATELIER[cle].map((x) => champNombre(...x)));
+      cats.push(categorie(cle, n ? t("at_n_reglages", n) : t("at_defaut"), [grille]));
+    }
+    // 7. instructions
+    const sys = el("textarea");
+    sys.rows = 4;
+    sys.placeholder = t("chat_systeme_aide");
+    sys.value = A.systeme;
+    sys.setAttribute("aria-label", T().at_cats.instructions[0]);
+    sys.addEventListener("input", () => { A.systeme = sys.value; dessinerResume(); });
+    cats.push(categorie("instructions", A.systeme.trim() ? t("at_ecrites") : t("at_aucune"), [el("p", "aide", t("at_sys_aide")), sys]));
+    // 8. mémoire de la carte
+    const mem = [el("p", "aide", t("at_mem_aide", go(etude.budget_go.utilisable, 2), go(etude.budget_go.disponible, 2)))];
+    for (const c of etude.charges) {
+      const l = el("div", "acc-installe");
+      l.append(el("span", "mono", c.nom), el("span", "aide", go(c.taille_go, 2)), bouton(t("mm_decharger"), "petit", async () => {
+        const r = await poster("/api/modeles/decharger", { nom: c.nom });
+        if (!r.ok) alert(await messageErreur(r));
+        relancer();
+      }));
+      mem.push(l);
+    }
+    if (!etude.charges.length) mem.push(el("p", "aide", t("at_mem_rien")));
+    cats.push(categorie("memoire", etude.charges.length ? t("at_mem_charges", etude.charges.length) : t("at_mem_libre"), mem));
+    // 9. autre matériel
+    const mats = C.materiel.map((p) => {
+      const l = el("div", `at-plateforme${p.compatible ? "" : " non"}`);
+      const g = el("span", "at-opt-g");
+      g.append(el("strong", null, p.nom), el("span", "aide", [`${f(p.memoire_go, 0)} ${UNITE[etat.langue]}`, p.type_memoire, p.watts ? `${f(p.watts, 0)} W` : null].filter(Boolean).join(" · ")));
+      const d = el("span", "at-opt-d");
+      d.append(el("span", "aide", p.compatible ? t("reste", go(p.reste_go, 1)) : t("manque", go(-p.reste_go, 1))));
+      if (p.plafond_tokens_s && p.compatible) d.append(el("span", "mono", `≤ ${f(p.plafond_tokens_s, 0)} tok/s`));
+      d.append(pastille(p.compatible ? "ok" : "non"));
+      l.append(g, d);
+      return l;
+    });
+    cats.push(categorie("materiel", t("at_mat_n", C.materiel.filter((p) => p.compatible).length, C.materiel.length), [el("p", "aide", t("at_mat_aide")), ...mats]));
+    gauche.replaceChildren(...cats);
+    dessinerResume();
+  }
+
+  function recette() {
+    const r = [];
+    if (A.base !== A.origine) r.push([t("at_r_poids", etude.format), () => relancer(A.origine)]);
+    if (A.quantifier) r.push([t("at_r_quant", A.quantifier.toUpperCase()), () => { A.quantifier = null; dessiner(); }]);
+    if (A.kv !== "f16") r.push([t("at_r_kv", A.kv), () => { A.kv = "f16"; relancer(); }]);
+    r.push([t("at_r_ctx", ctxCourt(A.ctx)), null]);
+    for (const [k, v] of Object.entries(A.params)) r.push([`${T().at_params[k]?.[0] || k} : ${k === "num_gpu" ? `${v} / ${etude.couches}` : v}`, () => { delete A.params[k]; dessiner(); }]);
+    if (A.systeme.trim()) r.push([t("at_r_sys"), () => { A.systeme = ""; dessiner(); }]);
+    return r;
+  }
+  function dessinerResume() {
+    const e = etude.estimation_go, u = etude.budget_go.utilisable;
+    const echelle = Math.max(e.total, u) * 1.08;
+    const barre = el("div", "at-barre");
+    barre.setAttribute("aria-hidden", "true");
+    for (const [cl, v] of [["poids", e.poids], ["kv", e.cache_kv], ["buf", e.buffers]]) { const sp = el("span", cl); sp.style.width = `${(v / echelle) * 100}%`; barre.append(sp); }
+    const lim = el("i", "limite");
+    lim.style.left = `${(u / echelle) * 100}%`;
+    barre.append(lim);
+    const tete2 = el("div", "at-resume-tete");
+    tete2.append(el("span", "mono", A.base), pastilleVerdict(etude.verdict));
+    const dl = el("dl", "lignes-mesure");
+    const li = (k, v) => dl.append(el("dt", null, k), el("dd", null, v));
+    li(t("at_l_poids"), go(e.poids, 2));
+    li(t("at_l_kv", ctxCourt(A.ctx), A.kv), go(e.cache_kv, 2));
+    li(t("at_l_buffers"), go(e.buffers, 2));
+    li(t("at_l_total"), `${go(e.total, 2)} / ${go(u, 2)}`);
+    li(etude.reste_go >= 0 ? t("at_l_reste") : t("at_l_manque"), go(Math.abs(etude.reste_go), 2));
+    if (etude.vitesse_attendue) li(t("at_l_vitesse"), `≈ ${f(etude.vitesse_attendue, 0)} tok/s`);
+    const chips = el("div", "at-recette");
+    for (const [texte, retirer] of recette()) {
+      const c = el("span", "at-chip", texte);
+      if (retirer) { const x = el("button", null, "×"); x.type = "button"; x.setAttribute("aria-label", `${t("img_retirer")} ${texte}`); x.addEventListener("click", retirer); c.append(x); }
+      chips.append(c);
+    }
+    const nom = el("input");
+    nom.type = "text";
+    nom.value = A.nom || (A.nom = `${A.origine.split("/").pop().replace(/[:]/g, "-").replace(/-latest$/, "")}-perso`);
+    nom.setAttribute("aria-label", t("at_nom"));
+    nom.addEventListener("input", () => { A.nom = nom.value.trim(); });
+    const etatCreation = el("p", "aide at-creation");
+    etatCreation.setAttribute("aria-live", "polite");
+    const creer = bouton(t("at_creer"), "principal", async () => {
+      creer.disabled = true;
+      etatCreation.className = "aide at-creation";
+      try {
+        const r = await poster("/api/modeles/creer", { nom: A.nom, base: A.base, systeme: A.systeme, quantifier: A.quantifier,
+          parametres: { num_ctx: A.ctx, ...A.params }, remplacer: A.remplacer === A.nom });
+        if (r.status === 409) { A.remplacer = A.nom; throw new Error(t("at_existe", A.nom)); }
+        if (!r.ok) throw new Error(await messageErreur(r));
+        for await (const evt of ndjson(r)) {
+          if (evt.type === "progression") etatCreation.textContent = `${t(evt.phase === "telechargement" ? "at_e_telechargement" : "at_e_creation")} ${evt.total ? `${f((evt.fait || 0) / evt.total * 100, 0)} %` : (evt.statut || "")}`;
+          else if (evt.type === "erreur") throw new Error(evt.erreur);
+          else if (evt.type === "fin") {
+            await chargerOllama();
+            const acts = el("div", "acts");
+            const mesurer = el("a", "bouton petit", t("mm_mesurer"));
+            mesurer.href = `#/bancs?nom=${encodeURIComponent(evt.nom)}`;
+            acts.append(bouton(t("a_discuter_court"), "petit principal", () => nouvelleConversationAvec(evt.nom)), mesurer);
+            etatCreation.replaceChildren(el("strong", null, t("at_cree", evt.nom)), acts);
+            etatCreation.className = "at-creation fait";
+          }
+        }
+      } catch (err) { etatCreation.textContent = err.message; etatCreation.className = "erreur-bloc at-creation"; }
+      creer.disabled = false;
+    });
+    if (etude.verdict === "trop_gros") creer.disabled = true;
+    const bas = el("div", "at-fabriquer");
+    bas.append(el("span", "libelle", t("at_nom")), nom, creer,
+      el("p", "aide", etude.verdict === "trop_gros" ? t("at_trop_gros") : etude.source === "registre" ? t("at_a_telecharger", go(etude.telechargement_go, 1)) : t("at_sans_copie")),
+      etatCreation);
+    droite.replaceChildren(tete2, barre, dl, el("span", "libelle", t("at_recette")), chips, bas);
+  }
+  await relancer();
 }
 
 // --- page Pour mon besoin : usage + vitesse voulue -> le modèle à installer --------------------
@@ -1244,24 +1601,6 @@ function zoneActions(d) {
 
 function textePiste(p) { const fab = T().piste[p.type]; return fab ? fab(p, f) : [p.type, ""]; }
 
-function elementOpti(p) {
-  const [titre, detail] = textePiste(p);
-  const c = el("div", `opti${p.rentre ? " suffit" : ""}`);
-  const h = el("p", "titre");
-  h.append(titre);
-  if (p.gain_go !== undefined) h.append(el("span", `gain${p.rentre ? " ok" : ""}`, `${t("gain", go(p.gain_go, 2), false)} · ${p.rentre ? t("suffit_seul") : t("pas_seul")}`));
-  c.append(h, el("p", "detail", detail));
-  let action = null;
-  if (p.type === "contexte") action = bouton(t("action_appliquer"), "petit", () => { etat.numCtx = p.valeur; garder("edgefit.ctx", String(p.valeur)); reverifier(); });
-  else if ((p.type === "variante" && p.nom) || p.type === "petit_modele") {
-    action = bouton(t("action_verifier", p.type === "variante" ? p.format : p.nom), "petit", () => { location.hash = `#/modele?nom=${encodeURIComponent(p.nom)}&ctx=${etat.numCtx}&kv=${etat.typeKv}`; });
-  }
-  if (action) { const a = el("div", "act"); a.append(action); c.append(a); }
-  if (p.type === "cache_kv") c.append(pliKv(p.valeur, p.commande));
-  if (p.type === "bureau") c.append(pliCommande([el("p", "aide", t("commande_terminal")), blocCommande(p.commande), el("p", "aide", t("bureau_retour")), blocCommande(p.retour)]));
-  return c;
-}
-
 function blocCombinaisons(d, titre) {
   const bloc = el("section", "optis");
   bloc.style.marginTop = "18px";
@@ -1299,18 +1638,11 @@ function listeOptimisations(d) {
   const combis = d.piles.filter((x) => x.cle !== "tel_quel");
   bloc.append(titrePage(t("opti_titre", nb), t("opti_sous", combis.length > 0)));
   if (combis.length) bloc.append(blocCombinaisons(d, t("combi_titre")));
-  for (const cat of d.solutions.categories) {
-    const h = el("h3", null, T().categorie[cat.cle] || cat.cle);
-    h.append(el("span", "n", String(cat.pistes.length)));
-    const suffit = cat.pistes.some((p) => p.rentre);
-    if (cat.cle === "materiel" || cat.cle === "info" || (!suffit && cat.cle !== "modele")) {
-      const pli = el("details", "pli-cat");
-      const resume = el("summary");
-      resume.append(h);
-      pli.append(resume, ...cat.pistes.map(elementOpti));
-      bloc.append(pli);
-    } else bloc.append(h, ...cat.pistes.map(elementOpti));
-  }
+  // toutes les optimisations, cliquables et chiffrées, sont dans l'atelier
+  const porte = el("a", "porte porte-atelier");
+  porte.href = `#/atelier?nom=${encodeURIComponent(d.modele)}`;
+  porte.append(icone("reglages"), el("strong", null, t("at_porte_titre")), el("span", "aide", t("at_porte_texte", d.solutions.categories.length)));
+  bloc.append(porte);
   return bloc;
 }
 
@@ -2019,7 +2351,8 @@ async function pageModeles() {
     else { const l = el("a", "lien-discret", t("non_mesure")); l.href = `#/bancs?nom=${encodeURIComponent(m.nom)}`; vit.append(l); }
     const acts = el("div", "acts");
     acts.append(bouton(t("a_discuter_court"), "petit principal", () => nouvelleConversationAvec(m.nom)),
-      bouton(t("mm_mesurer"), "petit", () => { location.hash = `#/bancs?nom=${encodeURIComponent(m.nom)}`; }));
+      bouton(t("mm_mesurer"), "petit", () => { location.hash = `#/bancs?nom=${encodeURIComponent(m.nom)}`; }),
+      bouton(t("at_optimiser"), "petit", () => { location.hash = `#/atelier?nom=${encodeURIComponent(m.nom)}`; }));
     if (charge) acts.append(bouton(t("mm_decharger"), "petit", async () => {
       const r = await poster("/api/modeles/decharger", { nom: m.nom });
       if (!r.ok) alert(await messageErreur(r));
