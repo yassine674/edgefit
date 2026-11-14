@@ -732,3 +732,113 @@ TEXTES.fr.conv_aucune = "Les conversations restent sur cette carte.";
 TEXTES.en.conv_aucune = "Conversations stay on this board.";
 TEXTES.fr.dec_chercher = "Filtrer, ou chercher sur Hugging Face";
 TEXTES.en.dec_chercher = "Filter, or search Hugging Face";
+
+// --- page Comparer ----------------------------------------------------------------------
+Object.assign(TEXTES.fr, {
+  nav_comparer: "Comparer",
+  cmp_titre: "Comparer deux modèles",
+  cmp_sous: "La même question posée aux deux modèles, l'un après l'autre : deux modèles chargés ensemble ne tiennent souvent pas dans la mémoire de la carte.",
+  cmp_vide_titre: "Il faut au moins deux modèles installés",
+  cmp_vide_texte: (n) => `${n ? "Un seul modèle installé" : "Aucun modèle installé"} pour l'instant. Installez-en depuis Découvrir, puis revenez comparer.`,
+  cmp_modele: "Modèle", cmp_inverser: "Inverser",
+  cmp_question: "Question", cmp_placeholder: "Posez la même question aux deux modèles (Ctrl+Entrée pour lancer)",
+  cmp_lancer: "Comparer", cmp_arreter: "Arrêter", cmp_arrete: "Arrêté.",
+  cmp_temp0: "Température 0 : réponses reproductibles",
+  cmp_froid: "Décharger avant chaque réponse : compare aussi le temps de chargement",
+  cmp_attente: (nom) => `Attend que ${nom} ait fini…`,
+  cmp_bilan: "Bilan", cmp_bilan_n: (n) => `${n} question${n > 1 ? "s" : ""} · valeurs médianes`,
+  cmp_lignes: { vitesse: "Vitesse de génération", premier: "Premier mot", chargement: "Chargement (démarrage à froid)",
+    memoire: "Mémoire mesurée", tokens: "Longueur des réponses", duree: "Durée totale d'une réponse",
+    score: "Score edgefit (banc d'essai)", avis: "Votre avis : meilleure réponse" },
+  cmp_ecart: "Écart", cmp_fois: (x) => `× ${x}`, cmp_tokens: (n) => `${n} tokens`, cmp_egalites: (n) => `${n} égalité${n > 1 ? "s" : ""}`,
+  cmp_phrase: (rapide, x, reactif, ds) => rapide === reactif
+    ? `${rapide} écrit ${x} fois plus vite et commence à répondre ${ds} s plus tôt.`
+    : `${rapide} écrit ${x} fois plus vite, mais ${reactif} commence à répondre ${ds} s plus tôt.`,
+  cmp_qualite: "edgefit mesure la vitesse et la mémoire, pas la qualité : lisez les deux réponses et donnez votre avis sous chaque question.",
+  cmp_avis_question: "Meilleure réponse :", cmp_avis: { a: "A", egal: "Égalité", b: "B" },
+  cmp_effacer: "Effacer les essais", cmp_depuis_bancs: "Comparer deux modèles sur vos questions",
+});
+Object.assign(TEXTES.en, {
+  nav_comparer: "Compare",
+  cmp_titre: "Compare two models",
+  cmp_sous: "The same question asked to both models, one after the other: two models loaded together often do not fit in the board's memory.",
+  cmp_vide_titre: "At least two installed models are needed",
+  cmp_vide_texte: (n) => `${n ? "Only one model installed" : "No model installed"} so far. Install some from Discover, then come back to compare.`,
+  cmp_modele: "Model", cmp_inverser: "Swap",
+  cmp_question: "Question", cmp_placeholder: "Ask both models the same question (Ctrl+Enter to run)",
+  cmp_lancer: "Compare", cmp_arreter: "Stop", cmp_arrete: "Stopped.",
+  cmp_temp0: "Temperature 0: reproducible answers",
+  cmp_froid: "Unload before each answer: also compares loading time",
+  cmp_attente: (nom) => `Waiting for ${nom} to finish…`,
+  cmp_bilan: "Summary", cmp_bilan_n: (n) => `${n} question${n > 1 ? "s" : ""} · median values`,
+  cmp_lignes: { vitesse: "Generation speed", premier: "First word", chargement: "Loading (cold start)",
+    memoire: "Measured memory", tokens: "Answer length", duree: "Total time per answer",
+    score: "edgefit score (benchmark)", avis: "Your verdict: better answer" },
+  cmp_ecart: "Gap", cmp_fois: (x) => `× ${x}`, cmp_tokens: (n) => `${n} tokens`, cmp_egalites: (n) => `${n} tie${n > 1 ? "s" : ""}`,
+  cmp_phrase: (rapide, x, reactif, ds) => rapide === reactif
+    ? `${rapide} writes ${x} times faster and starts answering ${ds} s earlier.`
+    : `${rapide} writes ${x} times faster, but ${reactif} starts answering ${ds} s earlier.`,
+  cmp_qualite: "edgefit measures speed and memory, not quality: read both answers and give your verdict under each question.",
+  cmp_avis_question: "Better answer:", cmp_avis: { a: "A", egal: "Tie", b: "B" },
+  cmp_effacer: "Clear runs", cmp_depuis_bancs: "Compare two models on your own questions",
+});
+
+// --- outils ------------------------------------------------------------------------------
+Object.assign(TEXTES.fr, {
+  outils_titre: "Outils autorisés",
+  outils_aide: "Le modèle peut demander à edgefit d'exécuter ces fonctions pendant une réponse. Elles ne font que lire : aucune commande, aucun fichier modifié, aucun accès à internet. Il faut un modèle qui sait appeler des outils (Qwen 2.5 et 3, Llama 3.1 et 3.2, Mistral…).",
+  outils_noms: {
+    board_status: ["État de la carte", "mémoire, charge CPU et GPU, températures, puissance, modèles chargés"],
+    installed_models: ["Modèles installés", "la liste des modèles présents sur la carte"],
+    check_model_fit: ["Vérifier un modèle", "dit si un modèle tient en mémoire pour un contexte donné (même calcul que la page Modèle)"],
+    calculator: ["Calculatrice", "calcule exactement au lieu de deviner (arithmétique seulement)"],
+    current_time: ["Date et heure", "la date et l'heure de la carte"],
+  },
+  outils_n: (n) => `Outils · ${n}`, outils_aucun: "Outils · aucun",
+  outil_encours: "en cours…", outil_voir: "Résultat",
+  outils_indisponibles: "Ce modèle ne sait pas appeler d'outils : il répond sans eux.",
+});
+Object.assign(TEXTES.en, {
+  outils_titre: "Allowed tools",
+  outils_aide: "The model can ask edgefit to run these functions during an answer. They only read: no command, no file changed, no internet access. It needs a model that can call tools (Qwen 2.5 and 3, Llama 3.1 and 3.2, Mistral…).",
+  outils_noms: {
+    board_status: ["Board status", "memory, CPU and GPU load, temperatures, power, loaded models"],
+    installed_models: ["Installed models", "the list of models on the board"],
+    check_model_fit: ["Check a model", "tells whether a model fits in memory for a given context (same computation as the Model page)"],
+    calculator: ["Calculator", "computes exactly instead of guessing (arithmetic only)"],
+    current_time: ["Date and time", "the board's date and time"],
+  },
+  outils_n: (n) => `Tools · ${n}`, outils_aucun: "Tools · none",
+  outil_encours: "running…", outil_voir: "Result",
+  outils_indisponibles: "This model cannot call tools: it answers without them.",
+});
+
+// --- voix ---------------------------------------------------------------------------------
+Object.assign(TEXTES.fr, {
+  voix_titre: "Voix",
+  voix_aide: "Les réponses peuvent être lues à voix haute par Piper, sur la carte, sans internet. Chaque voix se télécharge une fois depuis le dépôt officiel de Piper, et son empreinte est vérifiée.",
+  voix_sans_moteur: "Piper (la synthèse vocale) n'est pas installé. Pour l'ajouter, sur la carte :",
+  voix_sans_moteur_apres: "Puis relancez edgefit et revenez ici télécharger une voix.",
+  voix_langues: { fr: "Français", en: "Anglais" },
+  voix_details: (mo, licence) => `${mo} Mo · licence ${licence}`,
+  voix_installee: "installée", voix_telecharger: (mo) => `Télécharger (${mo} Mo)`,
+  voix_ecouter: "Écouter", voix_arreter: "Arrêter",
+  voix_auto: "Lire les réponses à voix haute pendant qu'elles s'écrivent",
+  voix_essai: { fr: "Bonjour. Je lis les réponses du modèle, directement sur la carte, sans internet.",
+    en: "Hello. I read the model's answers out loud, right on the board, without internet." },
+});
+Object.assign(TEXTES.en, {
+  voix_titre: "Voice",
+  voix_aide: "Answers can be read out loud by Piper, on the board, without internet. Each voice is downloaded once from Piper's official repository, and its checksum is verified.",
+  voix_sans_moteur: "Piper (text to speech) is not installed. To add it, on the board:",
+  voix_sans_moteur_apres: "Then restart edgefit and come back here to download a voice.",
+  voix_langues: { fr: "French", en: "English" },
+  voix_details: (mo, licence) => `${mo} MB · ${licence} license`,
+  voix_installee: "installed", voix_telecharger: (mo) => `Download (${mo} MB)`,
+  voix_ecouter: "Listen", voix_arreter: "Stop",
+  voix_auto: "Read answers out loud while they are being written",
+  voix_essai: { fr: "Bonjour. Je lis les réponses du modèle, directement sur la carte, sans internet.",
+    en: "Hello. I read the model's answers out loud, right on the board, without internet." },
+});
+Object.assign(TEXTES.fr.erreurs, { moteur_absent: "Piper n'est pas installé sur la carte.", voix_absente: "Cette voix n'est pas encore téléchargée (Réglages, Voix).", empreinte: "Fichier de voix altéré : supprimé." });
+Object.assign(TEXTES.en.erreurs, { moteur_absent: "Piper is not installed on the board.", voix_absente: "This voice is not downloaded yet (Settings, Voice).", empreinte: "Altered voice file: deleted." });

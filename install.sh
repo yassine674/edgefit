@@ -9,12 +9,15 @@
 #   2. installe uv dans le dossier personnel (sans mot de passe) ;
 #   3. si Ollama manque, DEMANDE avant de lancer son installateur officiel (qui, lui, demande
 #      le mot de passe administrateur) ;
-#   4. installe edgefit avec uv (qui télécharge un Python récent si celui de la machine est trop vieux) ;
+#   4. installe edgefit avec uv (qui télécharge un Python récent si celui de la machine est trop vieux),
+#      avec la voix (Piper) si on la demande ;
 #   5. lance « edgefit diagnostic ».
 #
 # Options (après « sh -s -- » si le script est passé par un tuyau) :
 #   --oui          répondre oui aux questions
 #   --sans-ollama  ne pas proposer d'installer Ollama
+#   --voix         installer aussi la voix (Piper, ≈ 80 Mo) sans poser la question
+#   --sans-voix    ne pas installer la voix
 #   --service      démarrer edgefit automatiquement (service systemd de l'utilisateur)
 #   --version REF  version d'edgefit à installer (tag ou branche ; défaut : main)
 #   --essai        afficher ce qui serait fait, sans rien exécuter
@@ -26,6 +29,7 @@ DEPOT="https://github.com/yassine674/edgefit"
 VERSION="main"
 OUI=0
 SANS_OLLAMA=0
+VOIX=""
 SERVICE=0
 ESSAI=0
 
@@ -33,10 +37,12 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --oui) OUI=1 ;;
     --sans-ollama) SANS_OLLAMA=1 ;;
+    --voix) VOIX=1 ;;
+    --sans-voix) VOIX=0 ;;
     --service) SERVICE=1 ;;
     --essai) ESSAI=1 ;;
     --version) shift; VERSION="${1:?--version demande une valeur}" ;;
-    -h|--help) sed -n '2,26p' "$0" 2>/dev/null || true; exit 0 ;;
+    -h|--help) sed -n '2,29p' "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "Option inconnue : $1" >&2; exit 2 ;;
   esac
   shift
@@ -123,7 +129,22 @@ fi
 
 # --- 4. edgefit --------------------------------------------------------------------------
 etape "edgefit ($VERSION)"
-lancer "uv tool install --force --python 3.12 'git+$DEPOT@$VERSION'"
+if [ -z "$VOIX" ]; then
+  if demander "Installer aussi la voix (lecture des réponses par Piper, environ 80 Mo) ?"; then VOIX=1; else VOIX=0; fi
+fi
+SANS="git+$DEPOT@$VERSION"
+AVEC="edgefit[voix] @ git+$DEPOT@$VERSION"
+if [ "$VOIX" -eq 1 ]; then
+  if [ "$ESSAI" -eq 1 ]; then
+    lancer "uv tool install --force --python 3.12 '$AVEC'"
+  elif ! uv tool install --force --python 3.12 "$AVEC"; then
+    # onnxruntime (utilisé par Piper) n'existe pas pour tous les systèmes anciens
+    info "La voix n'a pas pu être installée sur ce système : edgefit est installé sans elle."
+    lancer "uv tool install --force --python 3.12 '$SANS'"
+  fi
+else
+  lancer "uv tool install --force --python 3.12 '$SANS'"
+fi
 lancer "uv tool update-shell >/dev/null 2>&1 || true"
 
 if [ "$SERVICE" -eq 1 ]; then

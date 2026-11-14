@@ -4,6 +4,7 @@
 //   #/modele?nom= verdict détaillé, optimisations, téléchargement
 //   #/chat?id=    conversation (enregistrée sur la carte), mesures en direct à droite
 //   #/modeles     modèles installés : chargé ou non, mémoire réelle, décharger, supprimer
+//   #/comparer    la même question à deux modèles, réponses et mesures côte à côte
 //   #/bancs       bancs d'essai et score edgefit
 //   #/materiel    mesures de la carte en direct
 //   #/reglages    langue, contexte par défaut, cache KV déclaré du serveur
@@ -13,11 +14,15 @@
 const CONTEXTES = [2048, 4096, 8192, 16384, 32768, 65536, 131072];
 const GIO = 1024 ** 3;
 const HISTORIQUE = 60;
+const OUTILS = ["board_status", "installed_models", "check_model_fit", "calculator", "current_time"];
 
 const etat = {
   langue: pref("edgefit.langue", "fr"),
   typeKv: pref("edgefit.kv", "f16"),
   numCtx: Number(pref("edgefit.ctx", "4096")) || 4096,
+  outils: lireOutils(),
+  voix: null,
+  voixAuto: pref("edgefit.voix.auto", "0") === "1",
   ollama: { disponible: null },
   installes: [],
   charges: [],
@@ -35,6 +40,10 @@ const etat = {
 
 // --- outils --------------------------------------------------------------------------
 
+// outils autorisés : aucun au départ, l'utilisateur les coche un par un (Réglages ou réglages du chat)
+function lireOutils() {
+  try { return JSON.parse(localStorage.getItem("edgefit.outils") || "[]").filter((n) => OUTILS.includes(n)); } catch { return []; }
+}
 function pref(cle, defaut) { try { return localStorage.getItem(cle) || defaut; } catch { return defaut; } }
 function garder(cle, v) { try { localStorage.setItem(cle, v); } catch { /* sans importance */ } }
 const T = () => TEXTES[etat.langue];
@@ -354,7 +363,7 @@ function route() {
 }
 function afficher() {
   let { page, params } = route();
-  const pages = ["decouvrir", "modele", "chat", "modeles", "bancs", "materiel", "reglages"];
+  const pages = ["decouvrir", "modele", "chat", "modeles", "comparer", "bancs", "materiel", "reglages"];
   if (!pages.includes(page)) {
     location.replace(etat.installes.length ? "#/chat" : "#/decouvrir");
     return;
@@ -364,13 +373,14 @@ function afficher() {
     if (a.dataset.page === page) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   }
   montrerFantome(null);
-  const titres = { decouvrir: "nav_decouvrir", modeles: "nav_modeles", bancs: "nav_bancs", materiel: "nav_materiel", reglages: "nav_reglages", chat: "nouvelle_conv", modele: "nav_decouvrir" };
+  lecteur.arreter();
+  const titres = { decouvrir: "nav_decouvrir", modeles: "nav_modeles", bancs: "nav_bancs", materiel: "nav_materiel", reglages: "nav_reglages", chat: "nouvelle_conv", modele: "nav_decouvrir", comparer: "nav_comparer" };
   $("titre-mobile").textContent = t(titres[page]);
   const zone = $("page");
   zone.className = "";
   scrollTo(0, 0);
   ({ decouvrir: pageDecouvrir, modele: () => pageModele(params.nom), chat: () => pageChat(params.id),
-    modeles: pageModeles, bancs: pageBancs, materiel: pageMateriel, reglages: pageReglages })[page]();
+    modeles: pageModeles, comparer: pageComparer, bancs: pageBancs, materiel: pageMateriel, reglages: pageReglages })[page]();
   rendreConversations();
 }
 addEventListener("hashchange", afficher);
@@ -1055,7 +1065,11 @@ async function pageChat(id) {
   bRail.className = "bouton petit icone-texte";
   bRail.append(icone("mesures"), el("span", "txt", t("chat_mesures")));
   bRail.setAttribute("aria-label", t("chat_mesures"));
-  barre.append(choix, etatModele, el("span", "espace"), bReglages, bRail);
+  const pOutils = el("button", "puce puce-outils");
+  pOutils.type = "button";
+  pOutils.id = "puce-outils";
+  pOutils.addEventListener("click", () => { panneauReglages.hidden = false; panneauReglages.querySelector(".choix-outils input")?.focus(); });
+  barre.append(choix, etatModele, el("span", "espace"), pOutils, bReglages, bRail);
 
   // réglages de la conversation : instructions, température, contexte
   const panneauReglages = el("div", "reglages-chat");
@@ -1082,7 +1096,8 @@ async function pageChat(id) {
   };
   systeme.addEventListener("change", enregistrer);
   temp.addEventListener("change", enregistrer);
-  panneauReglages.append(champ(t("chat_systeme"), systeme), droite);
+  panneauReglages.append(champ(t("chat_systeme"), systeme), droite, choixOutils());
+  if (voixPrete()) { const v = caseVoixAuto(); v.classList.add("voix-chat"); panneauReglages.append(v); }
 
   const messages = el("div", "messages");
   messages.id = "messages";
@@ -1111,6 +1126,7 @@ async function pageChat(id) {
   const rail = el("aside", "rail");
   rail.id = "rail";
   zone.replaceChildren(colonne, rail);
+  majPuceOutils();
 
   champTexte.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
   champTexte.addEventListener("input", () => { champTexte.style.height = "auto"; champTexte.style.height = `${Math.min(champTexte.scrollHeight, 160)}px`; });
@@ -1197,15 +1213,71 @@ function blocReponse(texte, mesures, modele) {
   const auteur = el("div", "auteur");
   auteur.append(el("i"), modele || "");
   const tx = el("div", "texte", texte);
-  b.append(auteur, tx);
+  const zoneOutils = el("div", "outils-zone");
+  for (const o of mesures?.outils || []) zoneOutils.append(blocOutil(o, o.resultat));
+  b.append(auteur, zoneOutils, tx);
   if (mesures) b.append(anatomie(mesures));
   const outils = el("div", "msg-outils");
   const copier = el("button", null, t("copier"));
   copier.type = "button";
   copier.addEventListener("click", async () => { try { await navigator.clipboard.writeText(tx.textContent); copier.textContent = t("copie"); } catch { /* http : pas de presse-papier */ } });
   outils.append(copier);
+  if (voixPrete()) {
+    const ecouter = el("button", "ecouter", t("voix_ecouter"));
+    ecouter.type = "button";
+    ecouter.addEventListener("click", () => { if (lecteur.bouton === ecouter) lecteur.arreter(); else lecteur.dire(tx.textContent, ecouter); });
+    outils.append(ecouter);
+  }
   b.append(outils);
   return b;
+}
+
+// un appel d'outil dans une réponse : nom, arguments, puis résultat (replié)
+function blocOutil(appel, resultat) {
+  const b = el("div", `outil-appel${resultat ? "" : " encours"}${resultat?.error ? " echec" : ""}`);
+  b.dataset.nom = appel.nom;
+  const tete = el("div", "outil-tete");
+  const args = Object.entries(appel.arguments || {}).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", ");
+  tete.append(el("span", "outil-nom", T().outils_noms[appel.nom]?.[0] || appel.nom), el("code", "mono", `${appel.nom}(${args})`));
+  if (!resultat) tete.append(el("span", "aide", t("outil_encours")));
+  else if (resultat.error) tete.append(el("span", "outil-erreur", resultat.error));
+  else if ("result" in resultat) tete.append(el("span", "outil-resultat mono", `= ${resultat.result}`));
+  b.append(tete);
+  if (resultat && !resultat.error && !("result" in resultat)) {
+    const d = el("details");
+    d.append(el("summary", null, t("outil_voir")), el("pre", "code", JSON.stringify(resultat, null, 2)));
+    b.append(d);
+  }
+  return b;
+}
+
+// cases à cocher des outils autorisés (partagées entre les Réglages et le chat)
+function choixOutils() {
+  const zone = el("fieldset", "choix-outils");
+  zone.append(el("legend", "libelle", t("outils_titre")), el("p", "aide", t("outils_aide")));
+  for (const nom of OUTILS) {
+    const [lib, desc] = T().outils_noms[nom];
+    const l = el("label", "choix-outil");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = etat.outils.includes(nom);
+    cb.addEventListener("change", () => {
+      etat.outils = OUTILS.filter((n) => (n === nom ? cb.checked : etat.outils.includes(n)));
+      garder("edgefit.outils", JSON.stringify(etat.outils));
+      majPuceOutils();
+    });
+    const txt = el("span");
+    txt.append(el("strong", null, lib), " ", el("code", "mono aide", nom), el("span", "aide desc", desc));
+    l.append(cb, txt);
+    zone.append(l);
+  }
+  return zone;
+}
+function majPuceOutils() {
+  const p = $("puce-outils");
+  if (!p) return;
+  p.textContent = etat.outils.length ? t("outils_n", etat.outils.length) : t("outils_aucun");
+  p.setAttribute("aria-pressed", String(etat.outils.length > 0));
 }
 
 // anatomie d'une réponse : chargement | lecture du message | génération, à l'échelle
@@ -1276,24 +1348,41 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
   $("messages-col").append(bloc);
   const tx = bloc.querySelector(".texte");
   defiler();
-  let reponse = "", tokens = 0, premier = null;
+  let reponse = "", tokens = 0, premier = null, lu = 0;
+  const lireAuto = etat.voixAuto && voixPrete();
+  if (lireAuto) lecteur.commencer(bloc.querySelector(".ecouter"), false);
+  const jetonLecture = lecteur.jeton;
   try {
     const r = await poster("/api/chat", { modele: ch.modele, conversation_id: ch.conv.id, num_ctx: ch.conv.num_ctx,
-      systeme: ch.conv.systeme || "", temperature: ch.conv.temperature, type_kv: etat.typeKv, messages: ch.messages.map(({ role, content }) => ({ role, content })) });
+      systeme: ch.conv.systeme || "", temperature: ch.conv.temperature, type_kv: etat.typeKv, outils: etat.outils, messages: ch.messages.map(({ role, content }) => ({ role, content })) });
     if (!r.ok) throw new Error(await messageErreur(r));
     for await (const evt of ndjson(r)) {
       if (evt.type === "token") {
         reponse += evt.texte;
         tx.textContent = reponse;
         tokens += 1;
+        if (lireAuto && lecteur.jeton === jetonLecture) {
+          const coupe = decoupeLisible(reponse, lu);
+          if (coupe > lu) { lecteur.ajouter(reponse.slice(lu, coupe)); lu = coupe; }
+        }
         premier ??= performance.now();
         const ecoule = (performance.now() - premier) / 1000;
         if (ecoule > 0.3) majVitesseDirect(tokens / ecoule);
         defiler();
+      } else if (evt.type === "outil") {
+        bloc.querySelector(".outils-zone").append(blocOutil(evt));
+        defiler();
+      } else if (evt.type === "outil_resultat") {
+        const encours = [...bloc.querySelectorAll(".outil-appel.encours")].find((b) => b.dataset.nom === evt.nom);
+        if (encours) encours.replaceWith(blocOutil(evt, evt.resultat));
+        defiler();
+      } else if (evt.type === "outils_indisponibles") {
+        bloc.querySelector(".outils-zone").append(el("p", "aide outil-note", t("outils_indisponibles")));
       } else if (evt.type === "erreur") {
         throw new Error(evt.erreur);
       } else if (evt.type === "fin") {
         const m = evt.metriques;
+        if (lireAuto && lecteur.jeton === jetonLecture) { lecteur.ajouter(reponse.slice(lu)); lecteur.fermer(); }
         bloc.classList.remove("attente");
         bloc.insertBefore(anatomie(m), bloc.querySelector(".msg-outils"));
         ch.messages.push({ role: "assistant", content: reponse, mesures: m });
@@ -1305,6 +1394,7 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
       }
     }
   } catch (err) {
+    if (lireAuto && lecteur.jeton === jetonLecture) lecteur.arreter();
     ch.messages.pop();
     bloc.classList.remove("attente");
     bloc.classList.add("erreur");
@@ -1541,6 +1631,504 @@ async function pageModeles() {
   tic();
 }
 
+// --- voix : lecture des réponses par Piper, sur la carte --------------------------------------
+// La page découpe le texte en phrases et demande le son phrase par phrase : la voix commence
+// tout de suite, et pendant qu'une phrase est jouée, la suivante est déjà en préparation.
+
+// message passager en haut de la page (la bannière reprend ensuite son rôle : Ollama absent)
+function montrerBanniere(texte) {
+  const b = $("banniere");
+  b.textContent = texte;
+  b.hidden = false;
+  setTimeout(() => { if (b.textContent === texte) { b.hidden = true; chargerOllama(); } }, 6000);
+}
+
+async function chargerVoix() {
+  try { etat.voix = await json("/api/voix"); } catch { etat.voix = null; }
+}
+const voixInstallees = () => Object.entries(etat.voix?.voix || {}).filter(([, v]) => v.installee).map(([l]) => l);
+const voixPrete = () => !!etat.voix?.moteur && voixInstallees().length > 0;
+
+// français ou anglais ? quelques mots très fréquents suffisent pour choisir la voix
+function langueDe(texte) {
+  const compter = (re) => (texte.toLowerCase().match(re) || []).length;
+  const fr = compter(/\b(le|la|les|des|est|une|et|pour|que|dans|vous|pas|sur|avec|il|ce)\b/g);
+  const en = compter(/\b(the|is|and|to|of|you|that|for|with|it|not|on|are|this|be)\b/g);
+  const voulue = fr === en ? etat.langue : fr > en ? "fr" : "en";
+  const dispo = voixInstallees();
+  return dispo.includes(voulue) ? voulue : dispo[0];
+}
+
+// morceaux de 300 caractères au plus, coupés en fin de phrase
+function phrases(texte) {
+  const morceaux = [];
+  let courant = "";
+  for (const p of texte.split(/(?<=[.!?…:;])\s+|\n+/)) {
+    const s = p.trim();
+    if (!s) continue;
+    if (courant && (courant + " " + s).length > 300) { morceaux.push(courant); courant = ""; }
+    courant = courant ? `${courant} ${s}` : s;
+    while (courant.length > 900) { morceaux.push(courant.slice(0, 900)); courant = courant.slice(900); }
+  }
+  if (courant) morceaux.push(courant);
+  return morceaux;
+}
+
+const lecteur = {
+  jeton: 0, textes: [], ferme: true, bouton: null, langue: "fr", audio: null,
+
+  // nouvelle lecture ; `ferme` = false tant que la réponse s'écrit encore (lecture automatique)
+  commencer(bouton, ferme) {
+    this.arreter();
+    this.bouton = bouton;
+    this.ferme = ferme;
+    this.langue = null;
+    if (bouton) bouton.textContent = t("voix_arreter");
+    this.boucle(this.jeton);
+  },
+  ajouter(texte) {
+    if (!texte.trim()) return;
+    this.langue ??= langueDe(texte);
+    this.textes.push(...phrases(texte));
+  },
+  fermer() { this.ferme = true; },
+  dire(texte, bouton) { this.commencer(bouton, true); this.ajouter(texte); },
+  arreter() {
+    this.jeton += 1;
+    this.textes = [];
+    if (this.audio) { this.audio.pause(); this.audio = null; }
+    if (this.bouton) this.bouton.textContent = t("voix_ecouter");
+    this.bouton = null;
+  },
+
+  async synthese(texte) {
+    const r = await poster("/api/voix/lire", { texte, langue: this.langue || etat.langue });
+    if (r.ok) return r.blob();
+    if (r.status !== 422) throw new Error(await messageErreur(r));  // 422 : rien à lire (bloc de code seul)
+    return null;
+  },
+  jouer(blob, jeton) {
+    return new Promise((fini) => {
+      if (jeton !== this.jeton) { fini(); return; }
+      const url = URL.createObjectURL(blob);
+      const a = this.audio = new Audio(url);
+      const fin = () => { URL.revokeObjectURL(url); fini(); };
+      a.addEventListener("ended", fin);
+      a.addEventListener("error", fin);
+      a.addEventListener("pause", fin);
+      a.play().catch(fin);
+    });
+  },
+  async boucle(jeton) {
+    let suivant = null;
+    await null;  // laisse à l'appelant le temps d'ajouter le texte (commencer() puis ajouter())
+    try {
+      while (jeton === this.jeton) {
+        if (!suivant) {
+          const texte = this.textes.shift();
+          if (texte === undefined) {
+            if (this.ferme) break;
+            await new Promise((r) => setTimeout(r, 120));
+            continue;
+          }
+          suivant = this.synthese(texte);
+        }
+        const blob = await suivant;
+        suivant = null;
+        if (jeton !== this.jeton) break;
+        const apres = this.textes.shift();
+        if (apres !== undefined) suivant = this.synthese(apres);  // préparée pendant que celle-ci est jouée
+        if (blob) await this.jouer(blob, jeton);
+      }
+    } catch (err) {
+      if (jeton === this.jeton) montrerBanniere(err.message);
+    }
+    if (jeton === this.jeton) { if (this.bouton) this.bouton.textContent = t("voix_ecouter"); this.bouton = null; this.audio = null; }
+  },
+};
+
+// pendant l'écriture : on n'envoie que les phrases terminées, et jamais l'intérieur d'un bloc de code
+function decoupeLisible(texte, depuis) {
+  let coupe = -1;
+  const re = /[.!?…:;](?=\s)|\n/g;
+  re.lastIndex = depuis;
+  for (let m; (m = re.exec(texte));) {
+    const fin = m.index + m[0].length;
+    if ((texte.slice(0, fin).match(/```/g) || []).length % 2 === 0) coupe = fin;
+  }
+  return coupe;
+}
+
+function caseVoixAuto() {
+  const l = el("label", "cmp-option");
+  const cb = el("input");
+  cb.type = "checkbox";
+  cb.checked = etat.voixAuto;
+  cb.addEventListener("change", () => { etat.voixAuto = cb.checked; garder("edgefit.voix.auto", cb.checked ? "1" : "0"); if (!cb.checked) lecteur.arreter(); });
+  l.append(cb, el("span", null, t("voix_auto")));
+  return l;
+}
+
+function panneauVoix() {
+  const p = el("section", "panneau panneau-voix");
+  const rendre = () => {
+    p.replaceChildren(el("h2", null, t("voix_titre")));
+    if (!etat.voix) { p.append(el("p", "aide", T().erreurs.reseau)); return; }
+    if (!etat.voix.moteur) {
+      p.append(el("p", "aide", t("voix_sans_moteur")), blocCommande(`uv tool install --force --python 3.12 "edgefit[voix] @ git+https://github.com/yassine674/edgefit"`),
+        el("p", "aide", t("voix_sans_moteur_apres")));
+      return;
+    }
+    p.append(el("p", "aide", t("voix_aide")));
+    for (const [langue, v] of Object.entries(etat.voix.voix)) {
+      const ligne = el("div", "ligne-voix");
+      const g = el("div");
+      g.append(el("strong", null, T().voix_langues[langue]), " ", el("code", "mono aide", v.nom),
+        el("span", "aide desc", t("voix_details", v.taille_mo, v.licence)));
+      const acts = el("div", "acts");
+      if (v.installee) {
+        acts.append(el("span", "pastille ok", t("voix_installee")));
+        const essai = bouton(t("voix_ecouter"), "petit", () => {
+          if (lecteur.bouton === essai) { lecteur.arreter(); return; }
+          lecteur.commencer(essai, true);
+          lecteur.langue = langue;
+          lecteur.ajouter(T().voix_essai[langue]);
+        });
+        acts.append(essai);
+      } else {
+        const progres = el("div", "progres-carte");
+        progres.hidden = true;
+        const b = bouton(t("voix_telecharger", v.taille_mo), "petit principal", async () => {
+          b.disabled = true;
+          progres.hidden = false;
+          const barre = el("div", "barre-progres");
+          const s = el("span");
+          barre.append(s);
+          const txt = el("span");
+          progres.replaceChildren(txt, barre);
+          try {
+            const r = await poster("/api/voix/telecharger", { langue });
+            if (!r.ok) throw new Error(await messageErreur(r));
+            for await (const evt of ndjson(r)) {
+              if (evt.type === "progression") { s.style.width = `${(evt.fait / evt.total) * 100}%`; txt.textContent = `${f(evt.fait / 1e6, 0)} / ${f(evt.total / 1e6, 0)} Mo`; }
+              else if (evt.type === "erreur") throw new Error(evt.erreur);
+            }
+            await chargerVoix();
+            rendre();
+          } catch (err) {
+            progres.replaceChildren(el("span", "raison bad", err.message));
+            b.disabled = false;
+          }
+        });
+        acts.append(b);
+        g.append(progres);
+      }
+      ligne.append(g, acts);
+      p.append(ligne);
+    }
+    p.append(caseVoixAuto());
+  };
+  rendre();
+  return p;
+}
+
+// --- page Comparer : la même question à deux modèles, l'un après l'autre -------------------
+// Les deux modèles passent chacun leur tour (sur une carte de 8 Go, deux modèles chargés
+// ensemble ne tiennent souvent pas). Rien n'est enregistré en base : les essais vivent dans
+// la page, le temps de la séance. Chaque réponse ajoute quand même un point de calibration
+// (c'est /api/chat qui le fait).
+
+function mediane(valeurs) {
+  const v = valeurs.filter((x) => typeof x === "number" && Number.isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
+function etatComparaison() {
+  const noms = etat.installes.map((m) => m.nom);
+  const c = etat.comparaison ??= { a: noms[0], b: noms[1], tours: [], temp0: true, froid: false, encours: null };
+  const p = route().params;
+  if (p.a && noms.includes(p.a)) c.a = p.a;
+  if (p.b && noms.includes(p.b) && p.b !== c.a) c.b = p.b;
+  if (!noms.includes(c.a)) c.a = noms.find((n) => n !== c.b);
+  if (!noms.includes(c.b) || c.b === c.a) c.b = noms.find((n) => n !== c.a);
+  return c;
+}
+
+// la paire choisie reste dans l'adresse : un rechargement ou un lien garde les deux modèles
+function adresseComparaison(c) {
+  history.replaceState(null, "", `#/comparer?a=${encodeURIComponent(c.a)}&b=${encodeURIComponent(c.b)}`);
+}
+
+function lettre(l) { return el("span", `lettre ${l}`, l.toUpperCase()); }
+
+async function pageComparer() {
+  const zone = $("page");
+  zone.className = "page";
+  await Promise.all([chargerOllama(), chargerBancs()]);
+  const tete = titrePage(t("cmp_titre"), t("cmp_sous"));
+  if (etat.installes.length < 2) {
+    const vide = el("section", "panneau vide-grand");
+    const l = el("a", "bouton principal", t("nav_decouvrir"));
+    l.href = "#/decouvrir";
+    vide.append(el("h2", null, t("cmp_vide_titre")), el("p", "aide", t("cmp_vide_texte", etat.installes.length)), l);
+    zone.replaceChildren(tete, vide);
+    return;
+  }
+  const c = etatComparaison();
+  const noms = etat.installes.map((m) => m.nom);
+  // la page est redessinée quand une réponse se termine : on garde le curseur dans la question
+  const ancien = document.activeElement?.classList.contains("cmp-texte") ? document.activeElement : null;
+
+  // choix des deux modèles
+  const choix = el("div", "cmp-choix");
+  const selects = {};
+  for (const cote of ["a", "b"]) {
+    const s = el("select", "mono");
+    for (const n of noms) s.append(new Option(n, n));
+    s.value = c[cote];
+    s.addEventListener("change", () => {
+      const autre = cote === "a" ? "b" : "a";
+      if (s.value === c[autre]) c[autre] = c[cote];  // même modèle des deux côtés : on les échange
+      c[cote] = s.value;
+      adresseComparaison(c);
+      pageComparer();
+    });
+    selects[cote] = s;
+    const lib = el("span", "libelle cmp-lib");
+    lib.append(lettre(cote), t("cmp_modele"));
+    const l = el("label", "champ");
+    l.append(lib, s);
+    choix.append(l);
+    if (cote === "a") {
+      const inv = bouton(t("cmp_inverser"), "", () => { [c.a, c.b] = [c.b, c.a]; adresseComparaison(c); pageComparer(); });
+      inv.classList.add("cmp-inverser");
+      choix.append(inv);
+    }
+  }
+  for (const s of Object.values(selects)) s.disabled = !!c.encours;
+
+  // la question
+  const q = el("section", "panneau cmp-question");
+  const champTexte = el("textarea", "cmp-texte");
+  champTexte.rows = 3;
+  champTexte.placeholder = t("cmp_placeholder");
+  champTexte.value = c.brouillon || "";
+  champTexte.addEventListener("input", () => { c.brouillon = champTexte.value; });
+  const idees = el("div", "etiqs");
+  for (const s of [...T().suggestions.chat, ...T().suggestions.raisonnement, ...T().suggestions.code].slice(0, 4)) {
+    const p = el("button", "puce", s.length > 60 ? `${s.slice(0, 58)}…` : s);
+    p.type = "button";
+    p.title = s;
+    p.addEventListener("click", () => { champTexte.value = c.brouillon = s; champTexte.focus(); });
+    idees.append(p);
+  }
+  const option = (cle, texte) => {
+    const l = el("label", "cmp-option");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = c[cle];
+    cb.disabled = !!c.encours;
+    cb.addEventListener("change", () => { c[cle] = cb.checked; });
+    l.append(cb, el("span", null, texte));
+    return l;
+  };
+  const bas = el("div", "cmp-bas");
+  const options = el("div", "cmp-options");
+  options.append(option("temp0", t("cmp_temp0")), option("froid", t("cmp_froid")));
+  const bLancer = bouton(c.encours ? t("cmp_arreter") : t("cmp_lancer"), c.encours ? "" : "principal", () => {
+    if (c.encours) { c.encours.abort(); return; }
+    const question = champTexte.value.trim();
+    if (question) lancerComparaison(question);
+    else champTexte.focus();
+  });
+  champTexte.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) bLancer.click(); });
+  bas.append(options, bLancer);
+  q.append(el("span", "libelle", t("cmp_question")), champTexte, idees, bas);
+
+  const contenu = [tete, choix, q];
+  const bilan = blocBilan(c);
+  if (bilan) contenu.push(bilan);
+  for (const tour of c.tours) contenu.push(blocTour(c, tour));
+  if (c.tours.length) {
+    const eff = bouton(t("cmp_effacer"), "petit", () => { c.tours = []; pageComparer(); });
+    eff.disabled = !!c.encours;
+    eff.classList.add("cmp-effacer");
+    contenu.push(eff);
+  }
+  zone.replaceChildren(...contenu);
+  if (ancien) { champTexte.focus(); champTexte.setSelectionRange(ancien.selectionStart, ancien.selectionEnd); }
+}
+
+// une question et ses deux réponses, côte à côte (l'une sous l'autre sur téléphone)
+function blocTour(c, tour) {
+  const s = el("section", "panneau cmp-tour");
+  s.append(el("div", "msg-user cmp-q", tour.question));
+  const cols = el("div", "cmp-cols");
+  tour.ordre.forEach((nom, i) => {
+    const r = tour.res[nom];
+    const b = el("div", "msg-ia");
+    const auteur = el("div", "auteur");
+    const direct = el("span", "cmp-direct");
+    auteur.append(lettre(i ? "b" : "a"), nom, direct);
+    const tx = el("div", "texte", r.texte || (r.etat === "file" ? t("cmp_attente", tour.ordre[0]) : ""));
+    if (r.etat === "file") tx.classList.add("aide");
+    if (r.etat === "encours") b.classList.add("attente");
+    if (r.erreur) { b.classList.add("erreur"); tx.textContent = r.erreur; }
+    b.append(auteur, tx);
+    if (r.m) b.append(anatomie(r.m));
+    r.vue = { bloc: b, tx, direct };
+    cols.append(b);
+  });
+  s.append(cols);
+  // avis : edgefit mesure la vitesse, la qualité se juge en lisant
+  if (tour.ordre.every((n) => tour.res[n].m)) {
+    const avis = el("div", "cmp-avis");
+    avis.append(el("span", "aide", t("cmp_avis_question")));
+    for (const [cle, lib] of Object.entries(T().cmp_avis)) {
+      const p = el("button", "puce", lib);
+      p.type = "button";
+      p.setAttribute("aria-pressed", String(tour.avis === cle));
+      p.addEventListener("click", () => { tour.avis = tour.avis === cle ? null : cle; pageComparer(); });
+      avis.append(p);
+    }
+    s.append(avis);
+  }
+  return s;
+}
+
+// bilan : valeurs médianes sur toutes les questions posées à CETTE paire de modèles
+function blocBilan(c) {
+  const tours = c.tours.filter((x) => x.res[c.a]?.m && x.res[c.b]?.m);
+  if (!tours.length) return null;
+  const val = (nom, cle) => mediane(tours.map((x) => x.res[nom].m[cle]));
+  const chargement = (nom) => mediane(tours.map((x) => x.res[nom].m.chargement_s).filter((v) => v > 0.05));
+  const memoire = (nom) => [...tours].map((x) => x.res[nom].m.memoire_chargee_go).find((v) => v) ?? null;
+  const lignes = [
+    // [libellé, A, B, format, plus grand = mieux ? (null : pas de gagnant)]
+    [T().cmp_lignes.vitesse, val(c.a, "debit_tokens_s"), val(c.b, "debit_tokens_s"), (v) => `${f(v, 1)} tok/s`, true],
+    [T().cmp_lignes.premier, val(c.a, "ttft_mesure_s"), val(c.b, "ttft_mesure_s"), (v) => `${f(v, 2)} s`, false],
+    [T().cmp_lignes.chargement, chargement(c.a), chargement(c.b), (v) => `${f(v, 1)} s`, false],
+    [T().cmp_lignes.memoire, memoire(c.a), memoire(c.b), (v) => go(v, 2), false],
+    [T().cmp_lignes.tokens, val(c.a, "tokens_generes"), val(c.b, "tokens_generes"), (v) => t("cmp_tokens", f(v, 0)), null],
+    [T().cmp_lignes.duree, val(c.a, "duree_totale_s"), val(c.b, "duree_totale_s"), (v) => `${f(v, 1)} s`, false],
+  ];
+  const ba = dernierBanc(c.a), bb = dernierBanc(c.b);
+  if (ba || bb) lignes.push([T().cmp_lignes.score, ba?.score.score ?? null, bb?.score.score ?? null, (v) => `${f(v, 0)}/100`, true]);
+
+  const s = el("section", "panneau cmp-bilan");
+  const entete = el("div", "section-titre");
+  entete.style.margin = "0 0 10px";
+  entete.append(el("h2", null, t("cmp_bilan")), el("span", "aide", t("cmp_bilan_n", tours.length)));
+  const phrase = phraseBilan(c, lignes);
+  const table = el("table", "tableau cmp-table");
+  const tr = el("tr");
+  tr.append(el("th"));
+  for (const [l, nom] of [["a", c.a], ["b", c.b]]) { const th = el("th", "num"); th.append(lettre(l), " ", el("span", "mono cache-mobile", nom)); tr.append(th); }
+  tr.append(el("th", "num cache-mobile", t("cmp_ecart")));
+  const thead = el("thead");
+  thead.append(tr);
+  const tbody = el("tbody");
+  for (const [lib, a, b, fmt, grand] of lignes) {
+    if (a === null && b === null) continue;
+    const ligne = el("tr");
+    ligne.append(el("td", null, lib));
+    let gagnant = null;
+    if (grand !== null && a !== null && b !== null && a !== b) gagnant = (a > b) === grand ? "a" : "b";
+    for (const [cote, v] of [["a", a], ["b", b]]) {
+      const td = el("td", `num${gagnant === cote ? " gagne" : ""}`, v === null ? "–" : fmt(v));
+      ligne.append(td);
+    }
+    const ecart = a && b && grand !== null && a !== b ? t("cmp_fois", f(Math.max(a, b) / Math.min(a, b), 1)) : "";
+    ligne.append(el("td", "num aide cache-mobile", ecart));
+    tbody.append(ligne);
+  }
+  // avis de l'utilisateur sur la qualité
+  const avis = { a: 0, egal: 0, b: 0 };
+  for (const x of tours) {
+    if (!x.avis) continue;
+    // l'avis porte sur la position dans le tour : on le ramène aux côtés A et B actuels
+    const cote = x.avis === "egal" ? "egal" : (x.ordre[x.avis === "a" ? 0 : 1] === c.a ? "a" : "b");
+    avis[cote] += 1;
+  }
+  if (avis.a + avis.egal + avis.b) {
+    const ligne = el("tr");
+    const g = avis.a === avis.b ? null : avis.a > avis.b ? "a" : "b";
+    ligne.append(el("td", null, T().cmp_lignes.avis), el("td", `num${g === "a" ? " gagne" : ""}`, String(avis.a)),
+      el("td", `num${g === "b" ? " gagne" : ""}`, String(avis.b)), el("td", "num aide cache-mobile", avis.egal ? t("cmp_egalites", avis.egal) : ""));
+    tbody.append(ligne);
+  }
+  table.append(thead, tbody);
+  s.append(entete);
+  if (phrase) s.append(el("p", "cmp-phrase", phrase));
+  s.append(table, el("p", "aide cmp-note", t("cmp_qualite")));
+  return s;
+}
+
+function phraseBilan(c, lignes) {
+  const [, va, vb] = lignes[0];
+  const [, pa, pb] = lignes[1];
+  if (!va || !vb || !pa || !pb) return null;
+  const rapide = va >= vb ? c.a : c.b;
+  const reactif = pa <= pb ? c.a : c.b;
+  return t("cmp_phrase", rapide, f(Math.max(va, vb) / Math.min(va, vb), 1), reactif, f(Math.abs(pa - pb), 2));
+}
+
+async function lancerComparaison(question) {
+  const c = etat.comparaison;
+  const tour = { question, ordre: [c.a, c.b], res: {}, avis: null };
+  for (const nom of tour.ordre) tour.res[nom] = { texte: "", m: null, erreur: null, etat: "file" };
+  c.tours.unshift(tour);
+  c.brouillon = "";
+  c.encours = new AbortController();
+  const signal = c.encours.signal;
+  pageComparer();
+  try {
+    for (const nom of tour.ordre) {
+      const r = tour.res[nom];
+      r.etat = "encours";
+      if (r.vue) { r.vue.tx.textContent = ""; r.vue.tx.classList.remove("aide"); r.vue.bloc.classList.add("attente"); }
+      if (signal.aborted) { r.erreur = t("cmp_arrete"); break; }
+      try {
+        // démarrage à froid demandé : on vide la mémoire des deux modèles avant chaque réponse
+        if (c.froid) for (const n of tour.ordre) await poster("/api/modeles/decharger", { nom: n }, signal);
+        const corps = { modele: nom, num_ctx: etat.numCtx, type_kv: etat.typeKv, messages: [{ role: "user", content: question }] };
+        if (c.temp0) corps.temperature = 0;
+        const rep = await poster("/api/chat", corps, signal);
+        if (!rep.ok) throw new Error(await messageErreur(rep));
+        let tokens = 0, premier = null;
+        for await (const evt of ndjson(rep)) {
+          if (evt.type === "token") {
+            r.texte += evt.texte;
+            tokens += 1;
+            premier ??= performance.now();
+            const ecoule = (performance.now() - premier) / 1000;
+            if (r.vue) {
+              r.vue.tx.textContent = r.texte;
+              if (ecoule > 0.3) r.vue.direct.textContent = `${f(tokens / ecoule, 1)} tok/s`;
+            }
+          } else if (evt.type === "erreur") throw new Error(evt.erreur);
+          else if (evt.type === "fin") r.m = evt.metriques;
+        }
+      } catch (err) {
+        r.erreur = err.name === "AbortError" ? t("cmp_arrete") : err.message;
+      }
+      r.etat = "fait";
+      if (r.erreur) {
+        // le second modèle ne passe pas si le premier a échoué ou si l'on a arrêté
+        for (const n of tour.ordre) if (tour.res[n].etat === "file") { tour.res[n].etat = "fait"; tour.res[n].erreur = t("cmp_arrete"); }
+        break;
+      }
+      if (etat.page === "comparer") pageComparer();
+    }
+  } finally {
+    c.encours = null;
+    try { etat.charges = await json("/api/charges"); majRam(); } catch { /* sans importance */ }
+    if (etat.page === "comparer") pageComparer();
+  }
+}
+
 // --- page Bancs d'essai --------------------------------------------------------------------
 
 function derniersParModele() {
@@ -1555,7 +2143,9 @@ async function pageBancs() {
   await Promise.all([chargerOllama(), chargerBancs()]);
   let catalogue = etat.catalogue;
   if (!catalogue) { try { catalogue = etat.catalogue = await json(`/api/catalogue?num_ctx=${etat.numCtx}&type_kv=${etat.typeKv}`); } catch { catalogue = null; } }
-  const tete = titrePage(t("b_titre"), t("b_sous"));
+  const versComparer = el("a", "bouton petit", t("cmp_depuis_bancs"));
+  versComparer.href = "#/comparer";
+  const tete = titrePage(t("b_titre"), t("b_sous"), etat.installes.length >= 2 ? versComparer : null);
   const lancer = el("div", "lancer-banc");
   const choix = el("select");
   for (const m of etat.installes) choix.append(new Option(m.nom, m.nom));
@@ -1826,7 +2416,9 @@ async function pageReglages() {
     d.querySelector("summary").textContent = `${t("r_cmd")} : ${v}`;
     p2.append(d);
   }
-  gauche.append(p1, p2);
+  const p3 = el("section", "panneau");
+  p3.append(choixOutils());
+  gauche.append(p1, p2, p3, panneauVoix());
 
   const droite = el("div", "reglages-grille");
   const sante = el("section", "panneau");
@@ -1894,6 +2486,6 @@ $("bouton-langue").addEventListener("click", () => changerLangue(etat.langue ===
 (async function demarrer() {
   appliquerLangue();
   connecter();
-  await Promise.all([chargerOllama(), chargerConversations(), chargerBancs()]);
+  await Promise.all([chargerOllama(), chargerConversations(), chargerBancs(), chargerVoix()]);
   afficher();
 })();

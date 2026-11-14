@@ -467,3 +467,74 @@ a.bouton { text-decoration: none; }
 .col-etat { min-width: 190px; }
 .col-modele { min-width: 200px; }
 .opti .titre .aide { font-weight: 400; }
+
+/* --- page Comparer : A en bleu, B en violet (les deux bouts du dégradé Signal) ------------ */
+.lettre { display: inline-grid; place-items: center; width: 17px; height: 17px; border-radius: 4px; font: 600 10.5px/1 var(--mono); letter-spacing: 0; border: 1px solid; flex: none; }
+.lettre.a { color: var(--a); border-color: rgba(91, 141, 239, 0.55); background: rgba(91, 141, 239, 0.1); }
+.lettre.b { color: var(--b); border-color: rgba(139, 92, 246, 0.55); background: rgba(139, 92, 246, 0.1); }
+.cmp-choix { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; gap: 10px; margin-bottom: 14px; max-width: 760px; }
+.cmp-choix .champ { display: flex; }
+.cmp-choix select { width: 100%; font-size: 12.5px; }
+.cmp-lib { display: flex; align-items: center; gap: 7px; }
+.cmp-question { display: flex; flex-direction: column; gap: 10px; }
+.cmp-question textarea { width: 100%; resize: vertical; min-height: 64px; }
+.cmp-bas { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
+.cmp-options { display: flex; flex-direction: column; gap: 4px; }
+.cmp-option { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--t2); cursor: pointer; }
+.cmp-option input { accent-color: var(--a); margin: 0; }
+.cmp-bas .bouton { min-width: 120px; }
+.cmp-phrase { font-size: 14px; color: var(--t1); margin-bottom: 12px; }
+.cmp-table th .lettre { vertical-align: -3px; }
+.cmp-table th .mono { text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--t2); }
+.cmp-table td.gagne { color: var(--t1); font-weight: 600; }
+.cmp-table td.num:not(.gagne):not(.aide) { color: var(--t2); }
+.cmp-table td.gagne::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); margin-right: 7px; vertical-align: 1px; }
+.cmp-note { margin-top: 10px; }
+.cmp-tour { display: flex; flex-direction: column; gap: 14px; }
+.cmp-q { align-self: flex-start; max-width: 100%; }
+.cmp-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.cmp-cols .msg-ia { border-top: 1px solid var(--line); padding-top: 10px; }
+.cmp-cols .msg-ia .auteur { color: var(--t2); }
+.cmp-cols .msg-ia .texte.aide { font-style: normal; }
+.cmp-direct { margin-left: auto; color: var(--t3); }
+.cmp-avis { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-top: 1px solid var(--line); padding-top: 12px; }
+.cmp-effacer { margin-top: 14px; }
+.panneau.cmp-tour + .panneau.cmp-tour, .cmp-question + .panneau, .cmp-bilan + .panneau { margin-top: 14px; }
+@media (max-width: 900px) { .cmp-cols { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) {
+  .cmp-choix { grid-template-columns: minmax(0, 1fr); }
+  .cmp-inverser { justify-self: start; }
+  .cmp-bas .bouton { width: 100%; }
+  .cmp-table td, .cmp-table th { padding: 9px 10px; }
+}
+
+/* --- outils ---------------------------------------------------------------------------- */
+.choix-outils { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.choix-outils legend { padding: 0; margin-bottom: 4px; }
+.choix-outil { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; font-size: 13px; }
+.choix-outil input { accent-color: var(--a); margin: 3px 0 0; flex: none; }
+.choix-outil strong { font-weight: 600; }
+.choix-outil code { font-size: 11px; }
+.choix-outil .desc { display: block; }
+.reglages-chat .choix-outils { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 12px; }
+.puce-outils { white-space: nowrap; }
+.outils-zone { display: flex; flex-direction: column; gap: 6px; }
+.outils-zone:empty { display: none; }
+.outil-appel { border: 1px solid var(--line); border-radius: 6px; background: var(--s1); padding: 7px 10px; font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; }
+.outil-appel.echec { border-color: rgba(242, 85, 90, 0.35); }
+.outil-tete { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.outil-nom { font-weight: 600; color: var(--t1); }
+.outil-tete code { color: var(--t2); font-size: 11.5px; overflow-wrap: anywhere; }
+.outil-resultat { color: var(--ok); }
+.outil-erreur { color: #ffb4b6; }
+.outil-appel pre.code { max-height: 240px; overflow: auto; padding-right: 11px; }
+.outil-note { font-size: 12px; }
+@media (prefers-reduced-motion: no-preference) { .outil-appel.encours .aide { animation: clignote 1s steps(2) infinite; } }
+
+/* --- voix -------------------------------------------------------------------------------- */
+.panneau-voix .ligne-voix { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; padding: 10px 0; border-top: 1px solid var(--line); }
+.panneau-voix .ligne-voix .desc { display: block; }
+.panneau-voix .ligne-voix code { font-size: 11px; }
+.panneau-voix .acts { display: flex; align-items: center; gap: 8px; }
+.panneau-voix .progres-carte { margin-top: 6px; min-width: 200px; }
+.reglages-chat .voix-chat { grid-column: 1 / -1; }

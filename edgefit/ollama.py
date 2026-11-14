@@ -131,9 +131,11 @@ class ClientOllama:
         modele = next((m for m in tags.get("models", []) if m["name"] == nom or m.get("model") == nom), None)
         if modele is None:
             return None
-        info = (await self._requete("POST", "/api/show", json={"model": nom})).get("model_info", {})
-        return {"taille_octets": modele["size"], "architecture": architecture_depuis_model_info(info),
-                "format": (modele.get("details", {}).get("quantization_level") or "").upper() or None}
+        show = await self._requete("POST", "/api/show", json={"model": nom})
+        return {"taille_octets": modele["size"], "architecture": architecture_depuis_model_info(show.get("model_info", {})),
+                "format": (modele.get("details", {}).get("quantization_level") or "").upper() or None,
+                # ["completion", "tools", "vision"...] ; absent sur les Ollama anciens (on ne sait pas)
+                "capacites": show.get("capabilities")}
 
     async def charges(self):
         # modèles chargés en ce moment : `size` est la mémoire réellement occupée
@@ -178,14 +180,22 @@ class ClientOllama:
             yield {"type": "progression", "statut": evt.get("status"),
                    "fait": evt.get("completed"), "total": evt.get("total")}
 
-    async def discuter(self, nom, messages, options=None):
+    async def discuter(self, nom, messages, options=None, outils=None):
         debut = time.perf_counter()
         premier = None
         corps = {"model": nom, "messages": messages, "stream": True, "options": options or {}}
+        if outils:
+            corps["tools"] = outils
         async for evt in self._flux("/api/chat", corps):
             if "error" in evt:
                 yield {"type": "erreur", "erreur": expliquer_erreur(evt["error"])}
                 return
+            # le modèle demande d'exécuter un ou plusieurs outils (avant la fin du flux)
+            appels = evt.get("message", {}).get("tool_calls")
+            if appels:
+                yield {"type": "appels", "appels": [{"nom": a.get("function", {}).get("name", ""),
+                                                     "arguments": a.get("function", {}).get("arguments") or {}}
+                                                    for a in appels]}
             if evt.get("done"):
                 yield {"type": "fin", "metriques": metriques_inference(evt, debut, premier, time.perf_counter())}
                 return

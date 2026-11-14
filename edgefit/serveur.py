@@ -9,15 +9,16 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import AfterValidator, BaseModel, Field
 
-from . import banc, calibration, stockage
+from . import banc, calibration, outils, stockage
 from .catalogue import SUGGESTIONS, Catalogue, depot_valide
 from .compatibilite import OCTETS_KV, _verdict, analyser, budget, estimer, plateforme_correspondante, solutions, verdict_rapide
 from .ollama import GO, ModeleInconnu, OllamaIndisponible, nom_valide
 from .registre import Registre, RegistreErreur
+from .voix import LANGUES, TEXTE_MAX, Voix, VoixErreur
 from .securite import NOM_COOKIE, jeton_valide, origine_autorisee
 
 DOSSIER_STATIC = Path(__file__).parent / "static"
@@ -50,6 +51,7 @@ class Message(BaseModel):
 # bornes larges : Ollama accepte jusqu'au contexte maximal du modèle (128K pour Llama 3.1...)
 Contexte = Annotated[int, Field(ge=256, le=1_048_576)]
 TypeKV = Literal[tuple(OCTETS_KV)]
+NomOutil = Literal[outils.NOMS]  # liste blanche : seuls les outils écrits dans outils.py existent
 
 
 class DemandeChat(BaseModel):
@@ -62,6 +64,8 @@ class DemandeChat(BaseModel):
     temperature: float | None = Field(default=None, ge=0, le=2)
     conversation_id: int | None = None  # si présent, la question et la réponse sont enregistrées
     type_kv: TypeKV = "f16"  # réglage déclaré du serveur : sert à l'estimation enregistrée pour la calibration
+    # outils cochés par l'utilisateur ; un nom hors de la liste d'edgefit est refusé (422)
+    outils: list[NomOutil] = Field(default=[], max_length=10)
 
 
 class DemandeModele(BaseModel):
@@ -82,6 +86,15 @@ class ModifConversation(BaseModel):
     systeme: str | None = Field(default=None, max_length=8000)
     temperature: float | None = Field(default=None, ge=0, le=2)
     num_ctx: Contexte | None = None
+
+
+class DemandeVoix(BaseModel):
+    langue: Literal[LANGUES]
+
+
+class DemandeLecture(BaseModel):
+    texte: str = Field(min_length=1, max_length=TEXTE_MAX)
+    langue: Literal[LANGUES]
 
 
 class DemandeCompatibilite(BaseModel):
@@ -162,10 +175,11 @@ def _avec_score(entree):
     return {**entree, "score": s}
 
 
-def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, intervalle_s=1.0):
+def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, intervalle_s=1.0, voix=None):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     registre = registre or Registre()
     catalogue = catalogue or Catalogue()
+    voix = voix or Voix()
     occupation = Occupation()
     carte = getattr(fournisseur, "carte", None) or fournisseur.machine
 
@@ -189,6 +203,16 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
         charges = await _charges(ollama)
         b = budget(fournisseur.type_carte, memoire["totale"], memoire["disponible"], sum(m["taille"] for m in charges))
         return b, charges, memoire
+
+    boite = outils.Boite(fournisseur, ollama, lambda: budget_actuel())
+
+    async def sait_appeler_des_outils(nom):
+        try:
+            infos = await ollama.infos(nom)
+        except (OllamaIndisponible, ModeleInconnu):
+            return None
+        capacites = (infos or {}).get("capacites")
+        return None if capacites is None else "tools" in capacites  # None : Ollama trop ancien pour le dire
 
     async def installes():
         try:
@@ -305,19 +329,60 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
                 raise HTTPException(404, {"code": "conversation", "message": "conversation introuvable"})
             await asyncio.to_thread(stockage.ajouter_message, demande.conversation_id, "user", messages[-1]["content"])
 
+        autorises = set(demande.outils)
+        if autorises and await sait_appeler_des_outils(demande.modele) is False:
+            autorises = set()
+            sans_outils = True  # le modèle ne sait pas : on répond sans, et on le dit à la page
+        else:
+            sans_outils = False
+
         async def flux():
             occupation.entrer(demande.modele)
-            texte, mesures = [], None
+            texte, mesures, faits = [], None, []
+            historique = list(envoyes)
             try:
-                async for evt in _avec_memoire_chargee(ollama, demande.modele,
-                                                       ollama.discuter(demande.modele, envoyes, options)):
-                    if evt["type"] == "token":
-                        texte.append(evt["texte"])
-                    elif evt["type"] == "fin":
-                        mesures = evt["metriques"]
-                        if mesures.get("memoire_chargee_go"):
-                            await observer(demande.modele, demande.num_ctx, demande.type_kv, mesures["memoire_chargee_go"])
-                    yield evt
+                if sans_outils:
+                    yield {"type": "outils_indisponibles"}
+                # boucle : tant que le modèle demande des outils, edgefit les exécute et lui renvoie
+                # les résultats ; au dernier tour, plus d'outils proposés, il doit répondre
+                for tour in range(outils.MAX_TOURS + 1):
+                    definitions = boite.definitions(autorises) if tour < outils.MAX_TOURS else None
+                    appels, texte_tour = [], []
+                    async for evt in _avec_memoire_chargee(ollama, demande.modele,
+                                                           ollama.discuter(demande.modele, historique, options, definitions)):
+                        if evt["type"] == "appels":
+                            appels += evt["appels"]
+                            continue
+                        if evt["type"] == "erreur" and definitions and "does not support tools" in evt["erreur"]:
+                            # Ollama ancien qui ne disait pas que le modèle ne sait pas : on recommence sans
+                            autorises.clear()
+                            appels = [None]
+                            yield {"type": "outils_indisponibles"}
+                            break
+                        if evt["type"] == "token":
+                            texte.append(evt["texte"])
+                            texte_tour.append(evt["texte"])
+                        elif evt["type"] == "fin":
+                            mesures = evt["metriques"]
+                            if appels:
+                                continue  # fin d'un tour d'outils : la vraie fin viendra après
+                            if mesures.get("memoire_chargee_go"):
+                                await observer(demande.modele, demande.num_ctx, demande.type_kv, mesures["memoire_chargee_go"])
+                            if faits:
+                                mesures["outils"] = faits
+                        yield evt
+                    if not appels:
+                        break
+                    if appels == [None]:
+                        continue
+                    historique.append({"role": "assistant", "content": "".join(texte_tour),
+                                       "tool_calls": [{"function": {"name": a["nom"], "arguments": a["arguments"]}} for a in appels]})
+                    for a in appels:
+                        yield {"type": "outil", "nom": a["nom"], "arguments": a["arguments"]}
+                        resultat = await boite.executer(a["nom"], a["arguments"], autorises)
+                        faits.append({"nom": a["nom"], "arguments": a["arguments"], "resultat": resultat})
+                        yield {"type": "outil_resultat", "nom": a["nom"], "arguments": a["arguments"], "resultat": resultat}
+                        historique.append({"role": "tool", "content": outils.pour_le_modele(resultat), "tool_name": a["nom"]})
             finally:
                 occupation.sortir(demande.modele)
                 # une seule écriture par réponse, même si le navigateur coupe en cours de route
@@ -541,6 +606,25 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
         return resultat
 
     # le middleware HTTP ne s'applique pas aux WebSockets : contrôle refait ici
+    # --- voix (Piper) ---------------------------------------------------------------------------
+
+    @app.get("/api/voix")
+    async def etat_voix():
+        return voix.etat()
+
+    @app.post("/api/voix/telecharger")
+    async def telecharger_voix(demande: DemandeVoix):
+        return _ndjson(ollama, voix.telecharger(demande.langue))
+
+    @app.post("/api/voix/lire")
+    async def lire(demande: DemandeLecture):
+        try:
+            audio = await voix.lire(demande.texte, demande.langue)
+        except VoixErreur as e:
+            statut = {"moteur_absent": 501, "voix_absente": 409, "vide": 422}.get(e.code, 500)
+            raise HTTPException(statut, {"code": e.code, "message": str(e)}) from e
+        return Response(audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
     @app.websocket("/ws/metriques")
     async def flux_metriques(ws: WebSocket):
         if not (origine_autorisee(ws.headers.get("origin"), ws.headers.get("host"))

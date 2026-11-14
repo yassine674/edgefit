@@ -14,6 +14,7 @@ from .ollama_factice import OllamaFactice
 from .catalogue import Catalogue, CatalogueFactice
 from .registre import Registre, RegistreFactice
 from .securite import nouveau_jeton
+from .voix import Voix, VoixFactice
 from .serveur import creer_app
 
 
@@ -73,12 +74,14 @@ def main():
     jeton = nouveau_jeton()
     app = creer_app(fournisseur, ollama, jeton,
                     RegistreFactice() if args.fake else Registre(),
-                    CatalogueFactice() if args.fake else Catalogue())
+                    CatalogueFactice() if args.fake else Catalogue(),
+                    voix=VoixFactice() if args.fake else Voix())
 
     print(f"edgefit — machine : {fournisseur.machine}")
     print("Ollama simulé (--fake)" if args.fake else etat_ollama(args.ollama))
     adresse = f"http://{ip_locale()}:{args.port}/?token={jeton}"
-    ecrire_adresse(adresse)
+    if not args.fake:  # le mode simulé ne remplace pas l'adresse du vrai serveur
+        ecrire_adresse(adresse)
     print(f"Depuis votre PC, ouvrez : {adresse}")
     print("(cette adresse se réaffiche avec : edgefit adresse)")
     # flush : sans terminal (journal systemd, nohup), Python retarde l'affichage

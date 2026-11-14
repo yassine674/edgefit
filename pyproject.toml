@@ -16,6 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "httpx"]
+# voix (lecture des réponses) : Piper et onnxruntime, ≈ 80 Mo ; les voix se téléchargent depuis l'appli
+voix = ["piper-tts>=1.5"]
 
 [project.scripts]
 edgefit = "edgefit.cli:main"

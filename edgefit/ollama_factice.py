@@ -2,6 +2,8 @@
 # l'interface sans Ollama ni Jetson. Les métriques passent par la même fonction
 # metriques_inference que le vrai client, avec des durées plausibles pour une Jetson.
 import asyncio
+import json
+import re
 import time
 
 from .ollama import ModeleInconnu, metriques_inference
@@ -29,10 +31,29 @@ def _architecture(nom):
     return entree["architecture"] if entree else ARCHITECTURES["qwen2.5:0.5b"]
 
 
+def _appel_simule(question, installes):
+    """Outil qu'un vrai modèle demanderait probablement pour cette question (mots-clés grossiers)."""
+    q = question.lower()
+    calcul = re.search(r"[\d.()]+(?:\s*(?:[-+*/^]|\*\*)\s*[\d.()]+)+", question)
+    if calcul:
+        return "calculator", {"expression": calcul.group(0).strip()}
+    if any(m in q for m in ("tient", "fit", "rentre", "passe")):
+        nom = next((m for m in re.findall(r"[a-z0-9.\-]+:[a-z0-9.\-]+", q)), installes[-1]["nom"])
+        return "check_model_fit", {"model": nom, "context": "8192" if "8k" in q or "8192" in q else 4096}
+    if any(m in q for m in ("température", "temperature", "mémoire", "memoire", "memory", "carte", "board", "gpu")):
+        return "board_status", {}
+    if any(m in q for m in ("installé", "installe", "installed", "modèles", "models")):
+        return "installed_models", {}
+    if any(m in q for m in ("heure", "date", "time", "jour")):
+        return "current_time", {}
+    return None
+
+
 class OllamaFactice:
     url = "simulé (--fake)"
 
-    def __init__(self, pause_s=0.04):
+    def __init__(self, pause_s=0.04, sans_outils=()):
+        self._sans_outils = set(sans_outils)  # modèles simulés qui ne savent pas appeler d'outils
         self._installes = list(MODELES_INITIAUX)
         self._pause = pause_s
         self._charge = None  # (nom, num_ctx) du dernier modèle utilisé
@@ -54,7 +75,8 @@ class OllamaFactice:
             return None
         return {"taille_octets": int(modele["taille_go"] * 1024 ** 3),
                 "architecture": _architecture(nom),
-                "format": modele["quantification"] or "Q4_K_M"}
+                "format": modele["quantification"] or "Q4_K_M",
+                "capacites": ["completion"] + ([] if nom in self._sans_outils else ["tools"])}
 
     async def charges(self):
         if self._charge is None:
@@ -90,9 +112,23 @@ class OllamaFactice:
                                     "quantification": entree and entree["format"]})
         yield {"type": "fin"}
 
-    async def discuter(self, nom, messages, options=None):
+    async def discuter(self, nom, messages, options=None, outils=None):
         if all(m["nom"] != nom for m in self._installes):
             yield {"type": "erreur", "erreur": f"model '{nom}' not found"}
+            return
+        if outils and nom in self._sans_outils:
+            yield {"type": "erreur", "erreur": f"registry.ollama.ai/library/{nom} does not support tools"}
+            return
+        # outils proposés et question qui s'y prête : le modèle simulé demande un appel au lieu de répondre
+        autorises = {o["function"]["name"] for o in outils or []}
+        appel = _appel_simule(messages[-1]["content"], self._installes) if messages[-1]["role"] == "user" else None
+        if appel and appel[0] in autorises:
+            debut = time.perf_counter()
+            await asyncio.sleep(self._pause * 5)
+            yield {"type": "appels", "appels": [{"nom": appel[0], "arguments": appel[1]}]}
+            fin = {"load_duration": 0.01 * NS, "prompt_eval_count": 60, "prompt_eval_duration": 0.2 * NS,
+                   "eval_count": 12, "eval_duration": 0.3 * NS}
+            yield {"type": "fin", "metriques": metriques_inference(fin, debut, None, time.perf_counter())}
             return
         froid = self._charge is None or self._charge[0] != nom
         self._charge = (nom, (options or {}).get("num_ctx", 4096))
@@ -101,8 +137,15 @@ class OllamaFactice:
         debit = min(80.0, 25.0 / max(taille_go, 0.25))
         debut = time.perf_counter()
         question = messages[-1]["content"]
-        reponse = (f"Réponse simulée (mode --fake) de {nom} à : « {question[:80]} ». "
-                   "Les mesures affichées ci-dessous sont plausibles pour une Jetson, mais inventées.").split(" ")
+        if messages[-1]["role"] == "tool":
+            # réponse après un outil : le modèle simulé reprend le résultat
+            resultat = json.loads(messages[-1]["content"])
+            reponse = (f"D'après l'outil {messages[-1].get('tool_name', '')} : "
+                       + " ; ".join(f"{k} = {v}" for k, v in resultat.items() if not isinstance(v, (list, dict)))
+                       + ". (Réponse simulée, mode --fake.)").split(" ")
+        else:
+            reponse = (f"Réponse simulée (mode --fake) de {nom} à : « {question[:80]} ». "
+                       "Les mesures affichées ci-dessous sont plausibles pour une Jetson, mais inventées.").split(" ")
         if froid and self._pause:
             await asyncio.sleep(0.8 + taille_go)  # chargement simulé, compris dans le premier mot comme en vrai
         await asyncio.sleep(self._pause * 5)  # prefill
