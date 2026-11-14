@@ -117,6 +117,7 @@ class ClientOllama:
                 "parametres": m.get("details", {}).get("parameter_size"),
                 "quantification": m.get("details", {}).get("quantization_level"),
                 "modifie": m.get("modified_at"),
+                "empreinte": m.get("digest"),
             }
             for m in donnees.get("models", [])
         ]

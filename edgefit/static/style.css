@@ -788,3 +788,9 @@ button.acc-installe:hover { border-color: #464b5a; }
 .im-form > .acts { gap: 12px; flex-wrap: wrap; }
 .im-form > .acts .bouton { margin-left: auto; }
 .im-derniere { max-width: 420px; }
+
+/* alerte : contexte trop grand pour la mémoire */
+.alerte-ctx { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 9px 12px; border: 1px solid rgba(245, 185, 65, 0.4); border-radius: 10px; background: rgba(245, 185, 65, 0.06); font-size: 12.5px; color: var(--t1); }
+.alerte-ctx.bad { border-color: rgba(255, 110, 115, 0.45); background: rgba(255, 110, 115, 0.07); }
+.alerte-ctx > span { flex: 1; min-width: 220px; }
+#alerte-contexte:empty { display: none; }

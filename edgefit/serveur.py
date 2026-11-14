@@ -342,7 +342,13 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
 
     @app.get("/api/modeles")
     async def modeles():
-        return await ollama.modeles()
+        liste = await ollama.modeles()
+        # nom exact de la version (« qwen:latest » -> « qwen:4b-chat-v1.5-q4_0 ») : 4 s au plus, puis en cache
+        try:
+            exacts = await asyncio.wait_for(asyncio.gather(*(registre.nom_exact(m["nom"], m.get("empreinte")) for m in liste)), 4)
+        except (asyncio.TimeoutError, RegistreErreur):
+            exacts = [None] * len(liste)
+        return [{**m, "nom_exact": e} for m, e in zip(liste, exacts)]
 
     # nom en paramètre de requête : les noms Ollama contiennent "/" et ":"
     @app.get("/api/modeles/capacites")

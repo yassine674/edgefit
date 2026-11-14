@@ -571,6 +571,9 @@ Object.assign(TEXTES.fr, {
   mic_page_sure: (p) => `Le navigateur n'ouvre le micro que sur une page sûre. Sur la machine qui fait tourner edgefit, ouvrez http://localhost:${p} ; depuis un autre appareil (téléphone), lancez edgefit avec l'option --https.`,
   mic_refuse: "Accès au micro refusé : autorisez-le dans le navigateur (icône à gauche de l'adresse).",
   mic_absent: "Aucun micro trouvé.", mic_rien: "Rien n'a été compris : parlez un peu plus fort ou plus près du micro.",
+  ctx_trop: (c, kv, p, tot, u) => `Avec un contexte de ${c}, ce modèle demande ${tot} (dont ${kv} de cache KV pour ${p} de poids), plus que les ${u} utilisables : le système va utiliser le swap et tout ralentir.`,
+  ctx_lourd: (c, kv, p, tot, u) => `Avec un contexte de ${c}, le cache KV (${kv}) pèse plus que le modèle lui-même (${p}) : ${tot} au total sur ${u} utilisables. Un contexte plus petit libère beaucoup de mémoire.`,
+  ctx_passer: (c, kv) => `Passer à ${c} (cache ${kv})`,
   // images
   img_joindre: "Joindre une image", img_retirer: "Retirer", img_question_defaut: "Décris cette image.",
   img_non_vision: (m) => `${m} ne lit pas les images. Choisissez un modèle de vision (moondream, qwen2.5vl, llava...).`,
@@ -818,6 +821,9 @@ Object.assign(TEXTES.en, {
   mic_page_sure: (p) => `Browsers only open the microphone on a secure page. On the machine running edgefit, open http://localhost:${p}; from another device (phone), start edgefit with the --https option.`,
   mic_refuse: "Microphone access denied: allow it in the browser (icon left of the address).",
   mic_absent: "No microphone found.", mic_rien: "Nothing was understood: speak a little louder or closer to the microphone.",
+  ctx_trop: (c, kv, p, tot, u) => `With a ${c} context, this model needs ${tot} (${kv} of KV cache for ${p} of weights), more than the ${u} usable: the system will swap and everything will slow down.`,
+  ctx_lourd: (c, kv, p, tot, u) => `With a ${c} context, the KV cache (${kv}) weighs more than the model itself (${p}): ${tot} in total out of ${u} usable. A smaller context frees a lot of memory.`,
+  ctx_passer: (c, kv) => `Switch to ${c} (cache ${kv})`,
   // images
   img_joindre: "Attach an image", img_retirer: "Remove", img_question_defaut: "Describe this image.",
   img_non_vision: (m) => `${m} cannot read images. Pick a vision model (moondream, qwen2.5vl, llava...).`,

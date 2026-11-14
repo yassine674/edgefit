@@ -95,6 +95,9 @@ def main():
         print(chemin.read_text().strip())
         return
 
+    if args.fake and not os.environ.get("EDGEFIT_DB"):
+        # mode simulé : jamais dans la vraie base (des mesures inventées s'y mêleraient aux vraies)
+        os.environ["EDGEFIT_DB"] = str(Path(tempfile.mkdtemp(prefix="edgefit-fake-")) / "edgefit.db")
     fournisseur = detecter_fournisseur(fake=args.fake)
     ollama = OllamaFactice() if args.fake else ClientOllama(args.ollama)
     jeton = nouveau_jeton()

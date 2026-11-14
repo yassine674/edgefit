@@ -127,3 +127,26 @@ def test_le_chat_garde_le_modele_charge():
         return [e async for e in client.discuter("m", [{"role": "user", "content": "x"}], {}, None, "30m")]
     asyncio.run(scenario())
     assert recus[0]["keep_alive"] == "30m"
+
+
+def test_nom_exact_d_apres_l_empreinte():
+    import asyncio
+    import httpx
+    from edgefit.registre import Registre, tags_de_la_page
+    page = ('<a>qwen:latest</a> <span>d53d04290064</span> • 2.3GB • 32K <a>qwen:4b-chat</a> <span>d53d04290064</span> • 2.3GB '
+            '<a>qwen:4b-chat-v1.5-q4_0</a> <span>d53d04290064</span> • 2.3GB <a>qwen:7b</a> <span>2091ee8c8d8f</span> • 4.5GB')
+    assert tags_de_la_page("qwen", page)[:2] == [("latest", "d53d04290064"), ("4b-chat", "d53d04290064")]
+    r = Registre(transport=httpx.MockTransport(lambda req: httpx.Response(200, text=page)))
+    empreinte = "d53d04290064" + "0" * 52
+    assert asyncio.run(r.nom_exact("qwen:latest", empreinte)) == "qwen:4b-chat-v1.5-q4_0"
+    assert asyncio.run(r.nom_exact("qwen:4b-chat-v1.5-q4_0", empreinte)) is None   # déjà exact
+    assert asyncio.run(r.nom_exact("mon-modele:latest", "abc")) is None
+    hors_ligne = Registre(transport=httpx.MockTransport(lambda req: (_ for _ in ()).throw(httpx.ConnectError("x"))))
+    assert asyncio.run(hors_ligne.nom_exact("qwen:latest", empreinte)) is None
+
+
+def test_liste_des_modeles_avec_nom_exact(cas):
+    c, ollama = cas
+    ollama._installes.append({"nom": "qwen:latest", "taille_go": 2.1, "famille": "qwen2", "parametres": "4B", "quantification": "Q4_0"})
+    noms = {m["nom"]: m["nom_exact"] for m in c.get("/api/modeles").json()}
+    assert noms["qwen:latest"] == "qwen:4b-chat-v1.5-q4_0" and noms["qwen2.5:0.5b"] is None

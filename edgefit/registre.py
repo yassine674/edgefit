@@ -58,6 +58,12 @@ def adresse(nom):
 # format : "GGUF", version (u32), nb de tenseurs (u64), nb de métadonnées (u64), puis
 # chaque métadonnée = clé (chaîne) + type (u32) + valeur. Chaîne = longueur u64 + octets.
 
+def tags_de_la_page(famille, html):
+    """Paires (tag, empreinte) de la page publique des tags : « qwen:4b-chat d53d04290064 • 2.3GB »."""
+    texte = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    return list(dict.fromkeys(re.findall(re.escape(famille) + r":([A-Za-z0-9._-]+) ([0-9a-f]{12}) •", texte)))
+
+
 def tags_par_format(nom, tags):
     """{quantification: nom complet} parmi les tags publiés d'un modèle de la bibliothèque Ollama, pour la
     même taille que `nom` (« llama3.2:3b » -> {"Q8_0": "llama3.2:3b-instruct-q8_0", ...}). Quand plusieurs
@@ -183,21 +189,34 @@ class Registre:
         """Autres quantifications publiées pour ce modèle de la bibliothèque Ollama : {format: nom}.
         Le registre n'a pas de liste de tags : on lit la page publique ollama.com/library/<modèle>/tags.
         Vide pour un dépôt Hugging Face (noms prévisibles), un modèle personnel, ou hors ligne."""
-        famille = nom.partition(":")[0]
+        page = await self._page_tags(nom.partition(":")[0])
+        return tags_par_format(nom, sorted({t for t, _ in page})) if page else {}
+
+    async def _page_tags(self, famille):
+        """[(tag, empreinte sur 12 caractères)] lus sur ollama.com/library/<famille>/tags ; [] hors ligne."""
         if "/" in famille or not re.fullmatch(r"[A-Za-z0-9._-]+", famille):
-            return {}
+            return []
         cle = f"tags:{famille}"
         en_cache = self._cache.get(cle)
         if en_cache and time.monotonic() - en_cache[0] < self.DUREE_CACHE_S:
-            tags = en_cache[1]
-        else:
-            try:
-                r = await self._http.get(f"https://ollama.com/library/{famille}/tags")
-                tags = sorted(set(re.findall(re.escape(famille) + r":([A-Za-z0-9._-]+)", r.text))) if r.status_code == 200 else []
-            except httpx.HTTPError:
-                return {}
-            self._cache[cle] = (time.monotonic(), tags)
-        return tags_par_format(nom, tags)
+            return en_cache[1]
+        try:
+            r = await self._http.get(f"https://ollama.com/library/{famille}/tags")
+        except httpx.HTTPError:
+            return []
+        page = tags_de_la_page(famille, r.text) if r.status_code == 200 else []
+        self._cache[cle] = (time.monotonic(), page)
+        return page
+
+    async def nom_exact(self, nom, empreinte):
+        """« qwen:latest » -> « qwen:4b-chat-v1.5-q4_0 » : le tag le plus précis qui désigne le même fichier
+        (même empreinte). None si rien de plus précis n'est trouvé (modèle personnel, hors ligne...)."""
+        if not empreinte or "/" in nom.partition(":")[0]:
+            return None
+        famille, _, tag = nom.partition(":")
+        memes = [t for t, e in await self._page_tags(famille) if empreinte.startswith(e)]
+        meilleur = max(memes, key=len, default=None)
+        return f"{famille}:{meilleur}" if meilleur and len(meilleur) > len(tag or "latest") else None
 
     async def _get(self, url, entetes):
         try:
@@ -294,6 +313,9 @@ class RegistreFactice:
                 "head_dim": 64, "context_max": 131072, "sliding_window": None}
 
     VARIANTES = {"Q8_0": 8.5, "Q3_K_M": 3.9}  # quantifications « publiées » en mode --fake : bits par poids
+
+    async def nom_exact(self, nom, empreinte):
+        return "qwen:4b-chat-v1.5-q4_0" if nom == "qwen:latest" else None
 
     async def variantes_ollama(self, nom):
         from .catalogue import SUGGESTIONS

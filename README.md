@@ -97,7 +97,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-En mode `--fake`, la carte simulée consomme davantage et chauffe pendant l'écriture (et ralentit au-delà de 70 °C), pour voir l'énergie et l'endurance sans matériel. La vérification de compatibilité connaît les modèles installés simulés et deux modèles « à télécharger » : `gemma3:1b` et `llama3.1:8b`.
+En mode `--fake`, edgefit utilise toujours une base de données temporaire (sauf si `EDGEFIT_DB` est donné) : des mesures inventées ne se mêlent jamais aux vraies. La carte simulée consomme davantage et chauffe pendant l'écriture (et ralentit au-delà de 70 °C), pour voir l'énergie et l'endurance sans matériel. La vérification de compatibilité connaît les modèles installés simulés et deux modèles « à télécharger » : `gemma3:1b` et `llama3.1:8b`.
 
 Organisation du code (`edgefit/`) :
 

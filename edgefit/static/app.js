@@ -74,6 +74,8 @@ function icone(nom) {
   svg.setAttribute("aria-hidden", "true");
   return svg;
 }
+// nom exact de la version installée (« qwen:latest » -> « qwen:4b-chat-v1.5-q4_0 »), retrouvé par le serveur
+function libelleModele(nom) { return etat.installes.find((m) => m.nom === nom)?.nom_exact || nom; }
 function etiq(texte, accent) { return el("span", `etiq${accent ? " accent" : ""}`, texte); }
 function pastille(verdict) {
   const [classe, cle] = verdict === "non" ? ["non", "v_non"] : verdict === "juste" ? ["juste", "v_juste"] : ["ok", "v_ok"];
@@ -1011,7 +1013,7 @@ async function pageAccueil() {
     for (const m of etat.installes) {
       const l = el("div", "acc-installe");
       const g = el("div");
-      g.append(el("div", "mono", m.nom), el("div", "aide", [m.parametres, m.quantification, go(m.taille_go, 2)].filter(Boolean).join(" · ")));
+      g.append(el("div", "mono", libelleModele(m.nom)), el("div", "aide", [m.parametres, m.quantification, go(m.taille_go, 2)].filter(Boolean).join(" · ")));
       const acts = el("div", "acts");
       const opt = el("a", "bouton petit", t("at_optimiser"));
       opt.href = `#/atelier?nom=${encodeURIComponent(m.nom)}`;
@@ -1051,7 +1053,7 @@ async function pageAtelier(nomDemande) {
       const liste = el("div", "accueil-installes");
       for (const m of etat.installes) {
         const b = bouton("", "acc-installe", () => { location.hash = `#/atelier?nom=${encodeURIComponent(m.nom)}`; });
-        b.append(el("span", "mono", m.nom), el("span", "aide", [m.parametres, m.quantification].filter(Boolean).join(" · ")));
+        b.append(el("span", "mono", libelleModele(m.nom)), el("span", "aide", [m.parametres, m.quantification].filter(Boolean).join(" · ")));
         liste.append(b);
       }
       p.append(el("p", "aide", t("at_depart_installe")), liste);
@@ -1252,7 +1254,7 @@ async function pageAtelier(nomDemande) {
     lim.style.left = `${(u / echelle) * 100}%`;
     barre.append(lim);
     const tete2 = el("div", "at-resume-tete");
-    tete2.append(el("span", "mono", A.base), pastilleVerdict(etude.verdict));
+    tete2.append(el("span", "mono", libelleModele(A.base)), pastilleVerdict(etude.verdict));
     const dl = el("dl", "lignes-mesure");
     const li = (k, v) => dl.append(el("dt", null, k), el("dd", null, v));
     li(t("at_l_poids"), go(e.poids, 2));
@@ -1838,7 +1840,7 @@ async function pageChat(id) {
   const barre = el("div", "chat-barre");
   const choix = el("select");
   choix.setAttribute("aria-label", t("recherche_label"));
-  for (const m of etat.installes) choix.append(new Option(`${m.nom} · ${m.quantification || ""}`, m.nom));
+  for (const m of etat.installes) choix.append(new Option(`${libelleModele(m.nom)} · ${m.quantification || ""}`, m.nom));
   if (ch.modele) choix.value = ch.modele;
   choix.disabled = !etat.installes.length;
   choix.addEventListener("change", async () => {
@@ -1934,7 +1936,9 @@ async function pageChat(id) {
   const vignettes = el("div", "vignettes");
   vignettes.id = "vignettes";
   form.append(joindre, fichier, champTexte, boutonMicro(champTexte, form), envoyer);
-  cc.append(ctxLigne, vignettes, form, el("p", "aide", t("entree_aide")));
+  const alerte = el("div");
+  alerte.id = "alerte-contexte";
+  cc.append(alerte, ctxLigne, vignettes, form, el("p", "aide", t("entree_aide")));
   champTexte.addEventListener("paste", (e) => {
     const images = [...(e.clipboardData?.files || [])].filter((x) => x.type.startsWith("image/"));
     if (images.length) { e.preventDefault(); ajouterImages(images); }
@@ -1982,6 +1986,33 @@ async function estimerChat() {
   } catch { ch.estimation = null; }
   if (!ch.messages.length) rendreMessages();
   majRail();
+  alerteContexte(numCtx);
+}
+// contexte trop grand pour ce modèle : le cache KV remplit la mémoire (et le swap), tout ralentit.
+// On le dit avant la première question, avec un bouton pour passer au plus grand contexte raisonnable.
+function alerteContexte(numCtx) {
+  const ch = etat.chat;
+  const zone = $("alerte-contexte");
+  if (!zone) return;
+  const e = ch.estimation?.estimation_go, u = ch.estimation?.budget_go?.utilisable;
+  zone.replaceChildren();
+  if (!e || !u) return;
+  const trop = e.total > u, lourd = e.cache_kv > e.poids;
+  if (!trop && !lourd) return;
+  // plus grand contexte (puissance de 2, au moins 2K) où poids + cache + tampons tiennent dans 80 % du budget
+  let conseil = null;
+  for (const c of CONTEXTES.filter((x) => x >= 2048 && x < numCtx).reverse()) {
+    if (e.poids + e.cache_kv * (c / numCtx) + e.buffers <= 0.8 * u) { conseil = c; break; }
+  }
+  const p = el("div", `alerte-ctx ${trop ? "bad" : ""}`);
+  p.append(el("span", null, t(trop ? "ctx_trop" : "ctx_lourd", ctxCourt(numCtx), go(e.cache_kv, 1), go(e.poids, 1), go(e.total, 1), go(u, 1))));
+  if (conseil) p.append(bouton(t("ctx_passer", ctxCourt(conseil), go(e.cache_kv * (conseil / numCtx), 1)), "petit principal", async () => {
+    etat.numCtx = conseil;
+    garder("edgefit.ctx", String(conseil));
+    if (ch.conv) ch.conv = await json(`/api/conversations/${ch.conv.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ num_ctx: conseil }) });
+    estimerChat(); majContexte();
+  }));
+  zone.append(p);
 }
 
 function rendreMessages() {
@@ -2034,7 +2065,7 @@ function rendreMessages() {
 function blocReponse(texte, mesures, modele) {
   const b = el("div", "msg-ia");
   const auteur = el("div", "auteur");
-  auteur.append(el("i"), modele || "");
+  auteur.append(el("i"), modele ? libelleModele(modele) : "");
   const tx = el("div", "texte md");
   ecrireMarkdown(tx, texte || "");
   const zoneOutils = el("div", "outils-zone");
@@ -2501,7 +2532,7 @@ async function pageModeles() {
     const ligne = el("tr");
     const nom = el("td");
     nom.className = "col-modele";
-    nom.append(el("div", "mono", m.nom), el("div", "aide", [m.parametres, m.quantification].filter(Boolean).join(" · ")));
+    nom.append(el("div", "mono", libelleModele(m.nom)), el("div", "aide", [m.parametres, m.quantification].filter(Boolean).join(" · ")));
     if (m.modifie) nom.title = `${t("mm_installe_le")} ${dateCourte(m.modifie)}`;
     const etatC = el("td", "col-etat");
     if (charge) {
@@ -2931,7 +2962,7 @@ async function pageComparer() {
   const selects = {};
   for (const cote of ["a", "b"]) {
     const s = el("select", "mono");
-    for (const n of noms) s.append(new Option(n, n));
+    for (const n of noms) s.append(new Option(libelleModele(n), n));
     s.value = c[cote];
     s.addEventListener("change", () => {
       const autre = cote === "a" ? "b" : "a";
@@ -3195,7 +3226,7 @@ async function pageBancs() {
   const tete = titrePage(t("b_titre"), t("b_sous"), etat.installes.length >= 2 ? versComparer : null);
   const lancer = el("div", "lancer-banc");
   const choix = el("select");
-  for (const m of etat.installes) choix.append(new Option(m.nom, m.nom));
+  for (const m of etat.installes) choix.append(new Option(libelleModele(m.nom), m.nom));
   const demande = route().params.nom;
   if (demande && etat.installes.some((m) => m.nom === demande)) choix.value = demande;
   const phases = el("div", "phases");
@@ -3362,7 +3393,7 @@ async function pageEndurance() {
   }
   const form = el("section", "panneau end-form");
   const choix = el("select");
-  for (const m of etat.installes) choix.append(new Option(m.nom, m.nom));
+  for (const m of etat.installes) choix.append(new Option(libelleModele(m.nom), m.nom));
   const demande = route().params.nom;
   if (demande && etat.installes.some((m) => m.nom === demande)) choix.value = demande;
   const durees = el("select");
