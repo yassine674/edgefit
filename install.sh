@@ -107,6 +107,8 @@ info "Accès internet : ok"
 
 # --- 2. uv -----------------------------------------------------------------------------
 etape "uv (gestionnaire de paquets Python)"
+# ~/.local/bin est-il déjà dans le PATH du terminal de l'utilisateur ? (vérifié avant de l'ajouter ici)
+case ":$PATH:" in *":$HOME/.local/bin:"*) DANS_PATH=1 ;; *) DANS_PATH=0 ;; esac
 export PATH="$HOME/.local/bin:$PATH"
 if command -v uv >/dev/null 2>&1; then
   info "déjà installé : $(uv --version)"
@@ -145,7 +147,19 @@ if [ "$VOIX" -eq 1 ]; then
 else
   lancer "uv tool install --force --python 3.12 '$SANS'"
 fi
-lancer "uv tool update-shell >/dev/null 2>&1 || true"
+# Sur Ubuntu, ~/.profile n'ajoute ~/.local/bin au PATH que si le dossier existait à l'ouverture
+# de la session : juste après une première installation, « edgefit » serait introuvable, même
+# dans un nouveau terminal. On l'ajoute donc aussi au fichier lu par chaque nouveau terminal.
+if [ "$DANS_PATH" -eq 0 ]; then
+  case "${SHELL:-}" in
+    */zsh) RC="$HOME/.zshrc" ;;
+    *) RC="$HOME/.bashrc" ;;
+  esac
+  if ! grep -qs 'edgefit : commandes installées par uv' "$RC"; then
+    lancer "printf '\n# edgefit : commandes installées par uv\nexport PATH=\"\$HOME/.local/bin:\$PATH\"\n' >> '$RC'"
+    info "$HOME/.local/bin ajouté au PATH dans $RC"
+  fi
+fi
 
 if [ "$SERVICE" -eq 1 ]; then
   etape "Démarrage automatique"
@@ -175,4 +189,9 @@ else
   info "Lancer edgefit :   edgefit"
   info "Puis ouvrir depuis le PC l'adresse affichée (elle se réaffiche avec : edgefit adresse)"
 fi
-info "Ouvrez un nouveau terminal si la commande edgefit n'est pas trouvée."
+if [ "$DANS_PATH" -eq 0 ]; then
+  info ""
+  info "IMPORTANT : ce terminal ne connaît pas encore la commande edgefit. Au choix :"
+  info "  - ouvrir un nouveau terminal ;"
+  info "  - ou taper ici : export PATH=\"\$HOME/.local/bin:\$PATH\""
+fi
