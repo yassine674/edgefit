@@ -114,25 +114,191 @@ async function* ndjson(r) {
   if (tampon.trim()) yield JSON.parse(tampon);
 }
 
+// copie dans le presse-papier. navigator.clipboard n'existe que sur https ou localhost : edgefit
+// est ouvert en http://<ip-de-la-carte>, d'où la méthode ancienne (zone de texte cachée + copy).
+async function copierTexte(texte) {
+  try { await navigator.clipboard.writeText(texte); return true; } catch { /* page en http : méthode ancienne */ }
+  const zone = el("textarea");
+  zone.value = texte;
+  zone.setAttribute("readonly", "");
+  zone.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none";
+  document.body.append(zone);
+  zone.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { ok = false; }
+  zone.remove();
+  return ok;
+}
+function boutonCopier(texte, classe = "petit copier", libelle = t("commande_copier"), fait = t("commande_copie")) {
+  const b = bouton(libelle, classe, async () => {
+    const ok = await copierTexte(typeof texte === "function" ? texte() : texte);
+    b.textContent = ok ? fait : t("copie_impossible");
+    setTimeout(() => { b.textContent = libelle; }, 1500);
+  });
+  return b;
+}
+
 function blocCommande(texte) {
   const bloc = el("div", "bloc-cmd");
   const pre = el("pre", "code");
   pre.append(el("code", null, texte));
-  const copier = bouton(t("commande_copier"), "petit copier", async () => {
-    try {
-      await navigator.clipboard.writeText(texte);
-      copier.textContent = t("commande_copie");
-      setTimeout(() => { copier.textContent = t("commande_copier"); }, 1500);
-    } catch {
-      const plage = document.createRange();
-      plage.selectNodeContents(pre);
-      getSelection().removeAllRanges();
-      getSelection().addRange(plage);
-    }
-  });
-  bloc.append(pre, copier);
+  bloc.append(pre, boutonCopier(texte));
   return bloc;
 }
+
+// --- Markdown des réponses -------------------------------------------------------------------
+// Les modèles écrivent en Markdown (titres, listes, code, tableaux). On construit les éléments
+// un par un (jamais innerHTML) : un texte venu du modèle ne peut pas injecter de code dans la page.
+// Appelée à chaque token pendant l'écriture : un bloc de code pas encore fermé s'affiche déjà en code.
+
+const RE_INLINE = /(`+)([\s\S]*?[^`])\1(?!`)|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|~~([\s\S]+?)~~|\*(?!\s)([^*]+?)\*|(?<![\w])_(?!\s)([^_]+?)_(?![\w])|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
+
+function lien(texte, url) {
+  const a = el("a", null, texte);
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  return a;
+}
+function enLigne(texte, parent) {
+  let i = 0;
+  RE_INLINE.lastIndex = 0;
+  for (const m of texte.matchAll(RE_INLINE)) {
+    if (m.index > i) parent.append(texte.slice(i, m.index));
+    if (m[2] !== undefined) parent.append(el("code", null, m[2].trim() || m[2]));
+    else if (m[3] !== undefined || m[4] !== undefined) { const b = el("strong"); enLigne(m[3] ?? m[4], b); parent.append(b); }
+    else if (m[5] !== undefined) { const d = el("del"); enLigne(m[5], d); parent.append(d); }
+    else if (m[6] !== undefined || m[7] !== undefined) { const e = el("em"); enLigne(m[6] ?? m[7], e); parent.append(e); }
+    else if (m[8] !== undefined) parent.append(lien(m[8], m[9]));
+    else parent.append(lien(m[10], m[10]));
+    i = m.index + m[0].length;
+  }
+  if (i < texte.length) parent.append(texte.slice(i));
+}
+function lignesEnLigne(lignes, parent) {
+  lignes.forEach((l, k) => { if (k) parent.append(el("br")); enLigne(l, parent); });
+}
+function blocCode(code, langue, ouvert) {
+  const b = el("div", "bloc-code" + (ouvert ? " ouvert" : ""));
+  const tete = el("div", "code-tete");
+  tete.append(el("span", null, langue || t("md_code")), boutonCopier(code, "petit lien-discret", t("copier"), t("copie")));
+  const pre = el("pre");
+  pre.append(el("code", null, code));
+  b.append(tete, pre);
+  return b;
+}
+const RE_PUCE = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/;
+function liste(lignes, debut) {
+  // éléments de même retrait ; un retrait plus grand ouvre une sous-liste
+  const base = RE_PUCE.exec(lignes[debut]);
+  const retrait = base[1].length;
+  const ordonnee = /\d/.test(base[2]);
+  const l = el(ordonnee ? "ol" : "ul");
+  if (ordonnee && parseInt(base[2], 10) !== 1) l.start = parseInt(base[2], 10);
+  let i = debut, item = null;
+  while (i < lignes.length) {
+    const m = RE_PUCE.exec(lignes[i]);
+    if (m && m[1].length === retrait) {
+      item = el("li");
+      enLigne(m[3], item);
+      l.append(item);
+      i += 1;
+    } else if (m && m[1].length > retrait && item) {
+      const [sous, suite] = liste(lignes, i);
+      item.append(sous);
+      i = suite;
+    } else if (!m && item && lignes[i].trim() && /^\s{2,}/.test(lignes[i])) {
+      item.append(el("br"));
+      enLigne(lignes[i].trim(), item);
+      i += 1;
+    } else break;
+  }
+  return [l, i];
+}
+function cellules(ligne) {
+  return ligne.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+}
+function ecrireMarkdown(conteneur, texte) {
+  conteneur._brut = texte;
+  const lignes = texte.replace(/\r/g, "").split("\n");
+  const sortie = [];
+  let para = [];
+  const finPara = () => { if (para.length) { const p = el("p"); lignesEnLigne(para, p); sortie.push(p); para = []; } };
+  let i = 0;
+  while (i < lignes.length) {
+    const ligne = lignes[i];
+    const cloture = /^\s*(```+|~~~+)\s*([\w+#.-]*)/.exec(ligne);
+    if (cloture) {
+      finPara();
+      const fin = lignes.findIndex((l, k) => k > i && l.trim().startsWith(cloture[1]));
+      const code = lignes.slice(i + 1, fin === -1 ? undefined : fin).join("\n");
+      sortie.push(blocCode(code, cloture[2], fin === -1));
+      i = fin === -1 ? lignes.length : fin + 1;
+      continue;
+    }
+    if (!ligne.trim()) { finPara(); i += 1; continue; }
+    const titre = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/.exec(ligne);
+    if (titre) {
+      finPara();
+      const h = el(`h${Math.min(6, titre[1].length + 2)}`);  // h3 au plus grand : la page a déjà ses titres
+      enLigne(titre[2], h);
+      sortie.push(h);
+      i += 1;
+      continue;
+    }
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(ligne)) { finPara(); sortie.push(el("hr")); i += 1; continue; }
+    if (/^\s{0,3}>/.test(ligne)) {
+      finPara();
+      const cite = [];
+      while (i < lignes.length && /^\s{0,3}>/.test(lignes[i])) cite.push(lignes[i++].replace(/^\s{0,3}>\s?/, ""));
+      const q = el("blockquote");
+      ecrireMarkdown(q, cite.join("\n"));
+      sortie.push(q);
+      continue;
+    }
+    if (RE_PUCE.test(ligne) && !para.length) {
+      const [l, suite] = liste(lignes, i);
+      sortie.push(l);
+      i = suite;
+      continue;
+    }
+    if (ligne.includes("|") && i + 1 < lignes.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lignes[i + 1])) {
+      finPara();
+      const enTete = cellules(ligne);
+      const aligne = cellules(lignes[i + 1]).map((c) => (c.endsWith(":") ? (c.startsWith(":") ? "center" : "right") : ""));
+      const enveloppe = el("div", "md-table");
+      const table = el("table");
+      const tr = el("tr");
+      enTete.forEach((c, k) => { const th = el("th"); enLigne(c, th); if (aligne[k]) th.style.textAlign = aligne[k]; tr.append(th); });
+      const thead = el("thead");
+      thead.append(tr);
+      const tbody = el("tbody");
+      i += 2;
+      while (i < lignes.length && lignes[i].includes("|") && lignes[i].trim()) {
+        const r = el("tr");
+        cellules(lignes[i]).slice(0, enTete.length).forEach((c, k) => { const td = el("td"); enLigne(c, td); if (aligne[k]) td.style.textAlign = aligne[k]; r.append(td); });
+        tbody.append(r);
+        i += 1;
+      }
+      table.append(thead, tbody);
+      enveloppe.append(table);
+      sortie.push(enveloppe);
+      continue;
+    }
+    para.push(ligne);
+    i += 1;
+  }
+  finPara();
+  conteneur.replaceChildren(...sortie);
+}
+// pendant l'écriture : au plus une mise en forme par image affichée
+function ecrireMarkdownBientot(conteneur, texte) {
+  conteneur._attente = texte;
+  if (conteneur._prevu) return;
+  conteneur._prevu = requestAnimationFrame(() => { conteneur._prevu = 0; ecrireMarkdown(conteneur, conteneur._attente); });
+}
+function texteBrut(conteneur) { return conteneur._attente ?? conteneur._brut ?? conteneur.textContent; }
+
 function pliCommande(contenu) {
   const d = el("details", "cmd");
   d.append(el("summary", null, t("commande_afficher")), ...contenu);
@@ -361,26 +527,54 @@ function route() {
   const [chemin, requete] = location.hash.replace(/^#\/?/, "").split("?");
   return { page: chemin || "", params: Object.fromEntries(new URLSearchParams(requete || "")) };
 }
+// le menu a trois groupes ; chaque groupe a ses onglets en haut de page
+const GROUPES = {
+  modeles: [["decouvrir", "og_decouvrir"], ["choisir", "og_choisir"], ["modeles", "og_installes"]],
+  mesurer: [["bancs", "og_bancs"], ["comparer", "og_comparer"], ["endurance", "og_endurance"], ["fiche", "og_fiche"]],
+  carte: [["materiel", "og_materiel"], ["reglages", "og_reglages"]],
+};
+function groupeDe(page) {
+  if (page === "modele") return "modeles";
+  return Object.keys(GROUPES).find((g) => GROUPES[g].some(([p]) => p === page)) || null;
+}
+function rendreOnglets(page) {
+  const nav = $("onglets");
+  const groupe = groupeDe(page);
+  nav.hidden = !groupe;
+  if (!groupe) { nav.replaceChildren(); return; }
+  nav.setAttribute("aria-label", t(`nav_g_${groupe}`));
+  nav.replaceChildren(...GROUPES[groupe].map(([p, cle]) => {
+    const a = el("a", null, t(cle));
+    a.href = `#/${p}`;
+    if (p === page) a.setAttribute("aria-current", "page");
+    return a;
+  }));
+}
+
 function afficher() {
   let { page, params } = route();
-  const pages = ["decouvrir", "modele", "chat", "modeles", "comparer", "bancs", "materiel", "reglages"];
+  const pages = ["decouvrir", "modele", "chat", "modeles", "comparer", "bancs", "materiel", "reglages", "choisir", "endurance", "fiche"];
   if (!pages.includes(page)) {
     location.replace(etat.installes.length ? "#/chat" : "#/decouvrir");
     return;
   }
   etat.page = page;
+  const groupe = groupeDe(page);
   for (const a of document.querySelectorAll(".nav a")) {
-    if (a.dataset.page === page) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+    if (a.dataset.groupe === groupe) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   }
+  rendreOnglets(page);
   montrerFantome(null);
   lecteur.arreter();
-  const titres = { decouvrir: "nav_decouvrir", modeles: "nav_modeles", bancs: "nav_bancs", materiel: "nav_materiel", reglages: "nav_reglages", chat: "nouvelle_conv", modele: "nav_decouvrir", comparer: "nav_comparer" };
+  const titres = { decouvrir: "nav_g_modeles", modeles: "nav_g_modeles", choisir: "nav_g_modeles", modele: "nav_g_modeles",
+    bancs: "nav_g_mesurer", comparer: "nav_g_mesurer", endurance: "nav_g_mesurer", fiche: "nav_g_mesurer", materiel: "nav_g_carte", reglages: "nav_g_carte", chat: "nouvelle_conv" };
   $("titre-mobile").textContent = t(titres[page]);
   const zone = $("page");
   zone.className = "";
   scrollTo(0, 0);
   ({ decouvrir: pageDecouvrir, modele: () => pageModele(params.nom), chat: () => pageChat(params.id),
-    modeles: pageModeles, comparer: pageComparer, bancs: pageBancs, materiel: pageMateriel, reglages: pageReglages })[page]();
+    modeles: pageModeles, comparer: pageComparer, bancs: pageBancs, materiel: pageMateriel, reglages: pageReglages,
+    choisir: pageChoisir, endurance: pageEndurance, fiche: pageFiche })[page]();
   rendreConversations();
 }
 addEventListener("hashchange", afficher);
@@ -588,6 +782,108 @@ function carteModele(m, u, reco = false) {
   carte.append(tete, el("p", "desc", m.description), etiqs, mem, bas, actions);
   return carte;
 }
+
+// --- page Pour mon besoin : usage + vitesse voulue -> le modèle à installer --------------------
+// Le serveur garde les modèles qui tiennent en mémoire, font l'usage choisi et atteignent la vitesse
+// (mesurée, ou estimée avec le rendement appris sur les bancs de cette carte), puis prend le plus gros.
+
+const VITESSES_OBJECTIF = [0, 5, 10, 20, 30];
+async function pageChoisir() {
+  const zone = $("page");
+  zone.className = "page";
+  const p = route().params;
+  const o = { usage: objectifUsage(p.usage), debit: VITESSES_OBJECTIF.includes(Number(p.debit)) ? Number(p.debit) : 10,
+    ctx: Number(p.ctx) || etat.numCtx };
+  await chargerBancs();
+  const tete = titrePage(t("obj_titre"), t("obj_sous"));
+  const form = el("section", "panneau obj-form");
+  const resultat = el("div", "obj-resultat");
+  resultat.setAttribute("aria-live", "polite");
+  const ligne = (libelle, controles) => {
+    const l = el("div", "obj-ligne");
+    const g = el("div", "obj-puces");
+    g.setAttribute("role", "group");
+    g.setAttribute("aria-label", libelle);
+    g.append(...controles);
+    l.append(el("span", "libelle", libelle), g);
+    return l;
+  };
+  const puce = (texte, actif, action) => {
+    const b = el("button", "puce", texte);
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(actif));
+    b.addEventListener("click", action);
+    return b;
+  };
+  const relancer = () => {
+    history.replaceState(null, "", `#/choisir?usage=${o.usage || ""}&debit=${o.debit}&ctx=${o.ctx}`);
+    dessiner();
+    chercher();
+  };
+  const dessiner = () => {
+    form.replaceChildren(
+      ligne(t("obj_usage"), [puce(t("obj_tout"), !o.usage, () => { o.usage = null; relancer(); }),
+        ...Object.entries(T().tags).map(([k, lib]) => puce(lib, o.usage === k, () => { o.usage = k; relancer(); }))]),
+      ligne(t("obj_vitesse"), VITESSES_OBJECTIF.map((v) => puce(v ? `≥ ${v} tok/s` : t("obj_peu_importe"), o.debit === v, () => { o.debit = v; relancer(); }))),
+      ligne(t("obj_contexte"), [selectContexte(o.ctx, null, (c) => { o.ctx = c; relancer(); })]),
+      el("p", "aide", t("obj_lecture")),
+    );
+  };
+  async function chercher() {
+    resultat.replaceChildren(el("div", "squelette obj-squelette"));
+    let r;
+    try {
+      r = await json(`/api/objectif?${new URLSearchParams({ ...(o.usage ? { usage: o.usage } : {}), debit_min: o.debit, num_ctx: o.ctx, type_kv: etat.typeKv })}`);
+    } catch (err) { resultat.replaceChildren(el("p", "erreur-bloc", err.message)); return; }
+    const u = r.budget_go;
+    const source = el("p", "aide obj-source", r.plateforme
+      ? (r.rendement_mesures ? t("obj_rendement_mesure", f(r.rendement * 100, 0), r.rendement_mesures) : t("obj_rendement_defaut", f(r.rendement * 100, 0)))
+      : t("obj_sans_bande"));
+    const carteAvecVitesse = (m, reco) => {
+      const c = carteModele(m, u, reco);
+      if (m.vitesse_attendue) {
+        const v = el("p", `obj-attendu ${m.source_vitesse}`);
+        v.append(el("strong", null, `≈ ${f(m.vitesse_attendue, 0)} tok/s`), " ", t(m.source_vitesse === "mesure" ? "obj_mesuree" : "obj_estimee"));
+        c.querySelector(".desc").after(v);
+      }
+      return c;
+    };
+    const blocs = [];
+    if (r.retenus.length) {
+      const [meilleur, ...autres] = r.retenus;
+      const st = el("div", "section-titre");
+      st.append(el("span", "libelle", t("obj_meilleur")), el("span", "aide", t("obj_pourquoi")));
+      const g = el("div", "grille");
+      g.append(carteAvecVitesse(meilleur, true));
+      blocs.push(st, g);
+      if (autres.length) {
+        const st2 = el("div", "section-titre");
+        st2.append(el("span", "libelle", t("obj_autres", autres.length)));
+        const g2 = el("div", "grille");
+        g2.append(...autres.slice(0, 6).map((m) => carteAvecVitesse(m)));
+        blocs.push(st2, g2);
+      }
+    } else {
+      const vide = el("section", "panneau vide-grand");
+      vide.append(el("h2", null, t("obj_aucun")), el("p", "aide", t("obj_aucun_texte")));
+      blocs.push(vide);
+      if (r.presque.length) {
+        const st = el("div", "section-titre");
+        st.append(el("span", "libelle", t("obj_presque")), el("span", "aide", t("obj_presque_aide")));
+        const g = el("div", "grille");
+        g.append(...r.presque.map((m) => carteAvecVitesse(m)));
+        blocs.push(st, g);
+      }
+    }
+    const ex = Object.entries(r.exclus).filter(([, n]) => n).map(([k, n]) => T().obj_exclus[k](n));
+    if (ex.length) blocs.push(el("p", "aide obj-exclus", `${t("obj_ecartes")} ${ex.join(" · ")}.`));
+    resultat.replaceChildren(source, ...blocs);
+  }
+  dessiner();
+  zone.replaceChildren(tete, form, resultat);
+  chercher();
+}
+function objectifUsage(u) { return u && T().tags[u] ? u : null; }
 
 async function telecharger(nom, surProgres) {
   const r = await poster("/api/modeles/telecharger", { nom });
@@ -1023,14 +1319,15 @@ function listeOptimisations(d) {
 async function pageChat(id) {
   const zone = $("page");
   zone.className = "page-chat";
-  const ch = etat.chat = { conv: null, modele: null, messages: [], vitesses: [], derniere: null, estimation: null, ctxUtilise: 0, rail: true, envoi: false };
+  const ch = etat.chat = { conv: null, modele: null, messages: [], vitesses: [], derniere: null, estimation: null, ctxUtilise: 0, rail: true, envoi: false,
+    pieces: [], vision: false };
   if (id) {
     try {
       ch.conv = await json(`/api/conversations/${id}`);
     } catch { location.replace("#/chat"); return; }
     ch.modele = ch.conv.modele;
     ch.messages = ch.conv.messages.map((m) => ({ role: m.role, content: m.contenu, mesures: m.mesures }));
-    for (const m of ch.messages) if (m.mesures) { ch.vitesses.push(m.mesures.debit_tokens_s || 0); ch.derniere = m.mesures; ch.ctxUtilise += (m.mesures.tokens_prompt || 0) + (m.mesures.tokens_generes || 0); }
+    for (const m of ch.messages) if (m.role === "assistant" && m.mesures) { ch.vitesses.push(m.mesures.debit_tokens_s || 0); ch.derniere = m.mesures; ch.ctxUtilise += (m.mesures.tokens_prompt || 0) + (m.mesures.tokens_generes || 0); }
     $("titre-mobile").textContent = ch.conv.titre || t("conv_sans_titre");
   } else {
     ch.modele = etat.installes.find((m) => m.nom === pref("edgefit.dernier", ""))?.nom || etat.installes[0]?.nom || null;
@@ -1049,7 +1346,7 @@ async function pageChat(id) {
     garder("edgefit.dernier", ch.modele);
     if (ch.conv) await fetch(`/api/conversations/${ch.conv.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modele: ch.modele }) });
     ch.estimation = null;
-    majEtatModele(); rendreMessages(); estimerChat(); majRail();
+    majEtatModele(); rendreMessages(); estimerChat(); majRail(); verifierVision();
   });
   const etatModele = el("span", "etat-modele");
   etatModele.id = "etat-modele";
@@ -1118,8 +1415,32 @@ async function pageChat(id) {
   envoyer.type = "submit";
   envoyer.append(icone("envoyer"));
   envoyer.setAttribute("aria-label", t("envoyer"));
-  form.append(champTexte, envoyer);
-  cc.append(ctxLigne, form, el("p", "aide", t("entree_aide")));
+  // images (modèles de vision) : bouton, coller (Ctrl+V) ou glisser-déposer
+  const fichier = el("input");
+  fichier.type = "file";
+  fichier.accept = "image/*";
+  fichier.multiple = true;
+  fichier.hidden = true;
+  fichier.addEventListener("change", () => { ajouterImages(fichier.files); fichier.value = ""; });
+  const joindre = el("button", "bouton petit joindre");
+  joindre.type = "button";
+  joindre.id = "joindre";
+  joindre.hidden = true;
+  joindre.append(icone("image"));
+  joindre.setAttribute("aria-label", t("img_joindre"));
+  joindre.title = t("img_joindre");
+  joindre.addEventListener("click", () => fichier.click());
+  const vignettes = el("div", "vignettes");
+  vignettes.id = "vignettes";
+  form.append(joindre, fichier, champTexte, envoyer);
+  cc.append(ctxLigne, vignettes, form, el("p", "aide", t("entree_aide")));
+  champTexte.addEventListener("paste", (e) => {
+    const images = [...(e.clipboardData?.files || [])].filter((x) => x.type.startsWith("image/"));
+    if (images.length) { e.preventDefault(); ajouterImages(images); }
+  });
+  zoneComposer.addEventListener("dragover", (e) => { if ([...e.dataTransfer.types].includes("Files")) { e.preventDefault(); zoneComposer.classList.add("depot"); } });
+  zoneComposer.addEventListener("dragleave", () => zoneComposer.classList.remove("depot"));
+  zoneComposer.addEventListener("drop", (e) => { e.preventDefault(); zoneComposer.classList.remove("depot"); ajouterImages(e.dataTransfer.files); });
   zoneComposer.append(cc);
   colonne.append(barre, panneauReglages, messages, zoneComposer);
 
@@ -1137,6 +1458,7 @@ async function pageChat(id) {
   majContexte();
   majRail();
   estimerChat();
+  verifierVision();
   if (!etat.installes.length) envoyer.disabled = true;
   champTexte.focus();
 }
@@ -1202,7 +1524,7 @@ function rendreMessages() {
     return;
   }
   for (const m of ch.messages) {
-    if (m.role === "user") col.append(el("div", "msg-user", m.content));
+    if (m.role === "user") col.append(bulleUtilisateur(m));
     else col.append(blocReponse(m.content, m.mesures, ch.conv?.modele || ch.modele));
   }
   defiler();
@@ -1212,7 +1534,8 @@ function blocReponse(texte, mesures, modele) {
   const b = el("div", "msg-ia");
   const auteur = el("div", "auteur");
   auteur.append(el("i"), modele || "");
-  const tx = el("div", "texte", texte);
+  const tx = el("div", "texte md");
+  ecrireMarkdown(tx, texte || "");
   const zoneOutils = el("div", "outils-zone");
   for (const o of mesures?.outils || []) zoneOutils.append(blocOutil(o, o.resultat));
   b.append(auteur, zoneOutils, tx);
@@ -1220,12 +1543,15 @@ function blocReponse(texte, mesures, modele) {
   const outils = el("div", "msg-outils");
   const copier = el("button", null, t("copier"));
   copier.type = "button";
-  copier.addEventListener("click", async () => { try { await navigator.clipboard.writeText(tx.textContent); copier.textContent = t("copie"); } catch { /* http : pas de presse-papier */ } });
+  copier.addEventListener("click", async () => {
+    copier.textContent = (await copierTexte(texteBrut(tx))) ? t("copie") : t("copie_impossible");
+    setTimeout(() => { copier.textContent = t("copier"); }, 1500);
+  });
   outils.append(copier);
   if (voixPrete()) {
     const ecouter = el("button", "ecouter", t("voix_ecouter"));
     ecouter.type = "button";
-    ecouter.addEventListener("click", () => { if (lecteur.bouton === ecouter) lecteur.arreter(); else lecteur.dire(tx.textContent, ecouter); });
+    ecouter.addEventListener("click", () => { if (lecteur.bouton === ecouter) lecteur.arreter(); else lecteur.dire(texteBrut(tx), ecouter); });
     outils.append(ecouter);
   }
   b.append(outils);
@@ -1304,6 +1630,15 @@ function anatomie(m) {
   for (const [avant, fort, apres] of T().recu(m, f)) recu.append(avant, el("strong", null, fort), apres);
   if (chargement) recu.append(el("span", "froid", t("an_froid")));
   bloc.append(barre, leg, recu);
+  // énergie : seulement si la carte a un capteur de puissance (jamais une valeur inventée)
+  if (m.joules_par_token) {
+    const e = el("p", "recu energie");
+    e.title = t("en_source_aide")[m.source_puissance] || "";
+    e.append(el("strong", null, `${f(m.joules_par_token, 2)} J/token`),
+      ` · ${t("en_reponse", f(m.energie_j, 0), f(m.puissance_moy_w, 1), f(m.puissance_repos_w, 1))}`,
+      el("span", "source", T().en_source[m.source_puissance] || ""));
+    bloc.append(e);
+  }
   return bloc;
 }
 
@@ -1324,9 +1659,73 @@ function majContexte() {
   if (part > 0.9) z.append(el("span", null, t("chat_contexte_plein")));
 }
 
+// --- images jointes (modèles de vision) ------------------------------------------------------
+const IMAGES_MAX = 4;
+async function verifierVision() {
+  const ch = etat.chat;
+  ch.vision = false;
+  if (ch.modele) {
+    try { ch.vision = ((await json(`/api/modeles/capacites?nom=${encodeURIComponent(ch.modele)}`)).capacites || []).includes("vision"); } catch { ch.vision = false; }
+  }
+  if (etat.chat !== ch) return;
+  const b = $("joindre");
+  if (b) b.hidden = !ch.vision;
+  if (!ch.vision && ch.pieces.length) { ch.pieces = []; rendreVignettes(); }
+}
+// réduite à 1024 px de côté au plus, en JPEG : le modèle la réduirait de toute façon
+async function reduireImage(fichierImage) {
+  const bitmap = await createImageBitmap(fichierImage);
+  const k = Math.min(1, 1024 / Math.max(bitmap.width, bitmap.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bitmap.width * k);
+  c.height = Math.round(bitmap.height * k);
+  c.getContext("2d").drawImage(bitmap, 0, 0, c.width, c.height);
+  bitmap.close?.();
+  const url = c.toDataURL("image/jpeg", 0.85);
+  return { url, b64: url.slice(url.indexOf(",") + 1), nom: fichierImage.name || "image" };
+}
+async function ajouterImages(fichiers) {
+  const ch = etat.chat;
+  const liste = [...(fichiers || [])].filter((x) => x.type.startsWith("image/"));
+  if (!liste.length) return;
+  if (!ch.vision) { montrerBanniere(t("img_non_vision", ch.modele || "")); return; }
+  for (const x of liste) {
+    if (ch.pieces.length >= IMAGES_MAX) { montrerBanniere(t("img_trop", IMAGES_MAX)); break; }
+    try { ch.pieces.push(await reduireImage(x)); } catch { montrerBanniere(t("img_illisible", x.name)); }
+  }
+  rendreVignettes();
+}
+function rendreVignettes() {
+  const zone = $("vignettes");
+  if (!zone) return;
+  zone.replaceChildren(...etat.chat.pieces.map((p, i) => {
+    const v = el("div", "vignette");
+    const img = el("img");
+    img.src = p.url;
+    img.alt = p.nom;
+    const x = el("button", "retirer", "×");
+    x.type = "button";
+    x.setAttribute("aria-label", `${t("img_retirer")} ${p.nom}`);
+    x.addEventListener("click", () => { etat.chat.pieces.splice(i, 1); rendreVignettes(); });
+    v.append(img, x);
+    return v;
+  }));
+}
+function bulleUtilisateur(m) {
+  const b = el("div", "msg-user");
+  if (m.images?.length) {
+    const g = el("div", "msg-images");
+    for (const b64 of m.images) { const img = el("img"); img.src = `data:image/jpeg;base64,${b64}`; img.alt = ""; g.append(img); }
+    b.append(g);
+  } else if (m.mesures?.images) b.append(el("div", "aide msg-images-note", t("img_non_gardees", m.mesures.images)));
+  b.append(m.content);
+  return b;
+}
+
 async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
   const ch = etat.chat;
-  const question = champTexte.value.trim();
+  const images = ch.pieces.map((p) => p.b64);
+  const question = champTexte.value.trim() || (images.length ? t("img_question_defaut") : "");
   if (!question || !ch.modele || ch.envoi) return;
   ch.envoi = true;
   bEnvoyer.disabled = true;
@@ -1341,8 +1740,10 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
     } catch (err) { ch.envoi = false; bEnvoyer.disabled = false; alert(err.message); return; }
   }
   if (!ch.messages.length) $("messages-col").replaceChildren();
-  ch.messages.push({ role: "user", content: question });
-  $("messages-col").append(el("div", "msg-user", question));
+  ch.messages.push({ role: "user", content: question, ...(images.length ? { images } : {}) });
+  $("messages-col").append(bulleUtilisateur(ch.messages.at(-1)));
+  ch.pieces = [];
+  rendreVignettes();
   const bloc = blocReponse("", null, ch.modele);
   bloc.classList.add("attente");
   $("messages-col").append(bloc);
@@ -1354,12 +1755,12 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
   const jetonLecture = lecteur.jeton;
   try {
     const r = await poster("/api/chat", { modele: ch.modele, conversation_id: ch.conv.id, num_ctx: ch.conv.num_ctx,
-      systeme: ch.conv.systeme || "", temperature: ch.conv.temperature, type_kv: etat.typeKv, outils: etat.outils, messages: ch.messages.map(({ role, content }) => ({ role, content })) });
+      systeme: ch.conv.systeme || "", temperature: ch.conv.temperature, type_kv: etat.typeKv, outils: etat.outils, messages: ch.messages.map(({ role, content, images: im }) => ({ role, content, ...(im?.length ? { images: im } : {}) })) });
     if (!r.ok) throw new Error(await messageErreur(r));
     for await (const evt of ndjson(r)) {
       if (evt.type === "token") {
         reponse += evt.texte;
-        tx.textContent = reponse;
+        ecrireMarkdownBientot(tx, reponse);
         tokens += 1;
         if (lireAuto && lecteur.jeton === jetonLecture) {
           const coupe = decoupeLisible(reponse, lu);
@@ -1398,6 +1799,9 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
     ch.messages.pop();
     bloc.classList.remove("attente");
     bloc.classList.add("erreur");
+    cancelAnimationFrame(tx._prevu);
+    tx._prevu = 0;
+    tx._attente = tx._brut = err.message;
     tx.textContent = err.message;
   } finally {
     ch.envoi = false;
@@ -1473,7 +1877,20 @@ function majRail() {
   b4.append(el("span", "libelle", t("rail_memoire")), dl4, quatre);
   blocs.push(b4);
 
-  const mesures = ch.messages.map((x) => x.mesures).filter(Boolean);
+  // énergie de la dernière réponse : brute (carte entière) et nette (au-dessus du repos)
+  if (m?.joules_par_token) {
+    const be = el("section", "rail-bloc");
+    const g = el("div", "grand-nombre");
+    g.append(el("strong", null, f(m.joules_par_token, 2)), el("span", null, "J/token"));
+    const dle = el("dl", "lignes-mesure");
+    for (const [lib, val] of [[t("en_net"), `${f(m.joules_par_token_net, 2)} J/token`], [t("en_par_joule"), `${f(m.tokens_par_joule, 1)} tok/J`],
+      [t("en_moyenne"), `${f(m.puissance_moy_w, 1)} W`], [t("en_repos"), `${f(m.puissance_repos_w, 1)} W`],
+      [t("en_reponse_entiere"), `${f(m.energie_j, 0)} J`]]) dle.append(el("dt", null, lib), el("dd", null, val));
+    be.append(el("span", "libelle", t("en_titre")), g, dle, el("p", "aide", T().en_source_aide[m.source_puissance] || ""));
+    blocs.push(be);
+  }
+
+  const mesures = ch.messages.filter((x) => x.role === "assistant").map((x) => x.mesures).filter(Boolean);
   if (mesures.length > 1) {
     const st = el("section", "rail-bloc");
     const dls = el("dl", "lignes-mesure");
@@ -1532,7 +1949,7 @@ function majRailMateriel() {
 function duree(s) {
   if (!isFinite(s) || s <= 0) return "0 s";
   if (s < 90) return `${Math.round(s)} s`;
-  if (s < 5400) return `${Math.floor(s / 60)} min ${Math.round(s % 60)} s`;
+  if (s < 5400) return Math.round(s % 60) ? `${Math.floor(s / 60)} min ${Math.round(s % 60)} s` : `${Math.round(s / 60)} min`;
   return `${f(s / 3600, 1)} h`;
 }
 function dateCourte(d) {
@@ -1565,7 +1982,7 @@ async function pageModeles() {
     const p = el("p", disque.libre_go < 10 ? "raison bad" : "aide", t("mm_stockage", go(totalModeles, 2), go(disque.libre_go, 1), disque.dossier));
     stock.append(p, barreStockage([["mod", totalModeles], ["sys", Math.max(0, disque.total_go - disque.libre_go - totalModeles)]], disque.total_go));
   }
-  const table = el("table", "tableau");
+  const table = el("table", "tableau en-cartes");  // sur téléphone, chaque ligne devient une carte
   const tr = el("tr");
   for (const [lib, cl] of [[t("mm_modele")], [t("mm_etat")], [t("mm_vitesse"), "num"], [t("mm_utilise"), "num cache-mobile"], [t("mm_taille"), "num cache-mobile"], [""]]) tr.append(el("th", cl || "", lib));
   const thead = el("thead");
@@ -1597,7 +2014,7 @@ async function pageModeles() {
         etatC.append(dec);
       }
     } else etatC.append(el("span", "aide", t("mm_repos")));
-    const vit = el("td", "num");
+    const vit = el("td", "num col-vitesse");
     if (banc) { const z = el("div", "score-ligne"); z.append(el("span", null, `${f(banc.mesures.debit_tokens_s, 1)} tok/s`), anneau(banc.score.score)); vit.append(z); }
     else { const l = el("a", "lien-discret", t("non_mesure")); l.href = `#/bancs?nom=${encodeURIComponent(m.nom)}`; vit.append(l); }
     const acts = el("div", "acts");
@@ -1614,7 +2031,7 @@ async function pageModeles() {
       if (!r.ok) alert(await messageErreur(r));
       pageModeles();
     }));
-    const tdActs = el("td");
+    const tdActs = el("td", "col-acts");
     tdActs.append(acts);
     ligne.append(nom, etatC, vit, el("td", "num cache-mobile", derniere ? dateCourte(derniere.modifie * 1000) : t("jamais")),
       el("td", "num cache-mobile", go(m.taille_go, 2)), tdActs);
@@ -1972,7 +2389,9 @@ function blocTour(c, tour) {
     const auteur = el("div", "auteur");
     const direct = el("span", "cmp-direct");
     auteur.append(lettre(i ? "b" : "a"), nom, direct);
-    const tx = el("div", "texte", r.texte || (r.etat === "file" ? t("cmp_attente", tour.ordre[0]) : ""));
+    const tx = el("div", "texte md");
+    if (r.texte) ecrireMarkdown(tx, r.texte);
+    else if (r.etat === "file") tx.textContent = t("cmp_attente", tour.ordre[0]);
     if (r.etat === "file") tx.classList.add("aide");
     if (r.etat === "encours") b.classList.add("attente");
     if (r.erreur) { b.classList.add("erreur"); tx.textContent = r.erreur; }
@@ -2105,7 +2524,7 @@ async function lancerComparaison(question) {
             premier ??= performance.now();
             const ecoule = (performance.now() - premier) / 1000;
             if (r.vue) {
-              r.vue.tx.textContent = r.texte;
+              ecrireMarkdownBientot(r.vue.tx, r.texte);
               if (ecoule > 0.3) r.vue.direct.textContent = `${f(tokens / ecoule, 1)} tok/s`;
             }
           } else if (evt.type === "erreur") throw new Error(evt.erreur);
@@ -2237,6 +2656,256 @@ async function pageBancs() {
   calc.append(el("summary", null, t("b_calcul_titre")), ...t("b_calcul").map((x) => { const p = el("p", "explication", x); p.style.marginTop = "6px"; return p; }));
   contenu.push(calc);
   zone.replaceChildren(...contenu);
+}
+
+// --- page Endurance : la vitesse tient-elle quand la carte chauffe ? ---------------------------
+
+const SVG = "http://www.w3.org/2000/svg";
+function svgEl(nom, attrs = {}) {
+  const e = document.createElementNS(SVG, nom);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+// une piste du graphique : une grandeur dans le temps, avec ses repères min / max
+function piste(points, cle, duree, unite, classe, d = 0) {
+  const vals = points.filter((p) => p[cle] != null);
+  const bloc = el("div", `piste ${classe}`);
+  const tete = el("div", "piste-tete");
+  const der = vals.at(-1)?.[cle];
+  tete.append(el("span", "libelle", t(`end_${cle}`)), el("span", "piste-valeur", der != null ? `${f(der, d)} ${unite}` : "–"));
+  const L = 600, H = 90, M = 6;
+  const svg = svgEl("svg", { viewBox: `0 0 ${L} ${H}`, preserveAspectRatio: "none", class: "piste-svg", "aria-hidden": "true" });
+  if (vals.length) {
+    const ys = vals.map((p) => p[cle]);
+    let bas = Math.min(...ys), haut = Math.max(...ys);
+    if (cle === "debit") bas = 0;  // un débit se lit depuis zéro, sinon une petite baisse paraît énorme
+    if (haut - bas < 1e-6) haut = bas + 1;
+    const x = (p) => (Math.min(p.t, duree) / duree) * L;
+    const y = (v) => H - M - ((v - bas) / (haut - bas)) * (H - 2 * M);
+    const pts = vals.map((p) => `${x(p).toFixed(1)},${y(p[cle]).toFixed(1)}`).join(" ");
+    svg.append(svgEl("polygon", { points: `${x(vals[0]).toFixed(1)},${H} ${pts} ${x(vals.at(-1)).toFixed(1)},${H}`, class: "aire" }),
+      svgEl("polyline", { points: pts, class: "ligne", "vector-effect": "non-scaling-stroke" }));
+    const bornes = el("div", "piste-bornes");
+    bornes.append(el("span", null, `${f(haut, d)}`), el("span", null, `${f(bas, d)}`));
+    bloc.append(tete, bornes, svg);
+  } else bloc.append(tete, svg);
+  return bloc;
+}
+function graphiqueEndurance(points, duree) {
+  const g = el("div", "graph-endurance");
+  const resume = points.length ? t("end_aria", f(points[0].debit || 0, 1), f(points.at(-1).debit || 0, 1), points.at(-1).temp ?? "–") : "";
+  g.setAttribute("role", "img");
+  g.setAttribute("aria-label", resume);
+  g.append(piste(points, "debit", duree, "tok/s", "p-debit", 1), piste(points, "temp", duree, "°C", "p-temp", 0));
+  if (points.some((p) => p.puissance != null)) g.append(piste(points, "puissance", duree, "W", "p-puissance", 1));
+  const axe = el("div", "axe-temps");
+  axe.append(el("span", null, "0"), el("span", null, duree >= 120 ? `${duree / 60} min` : `${duree} s`));
+  g.append(axe);
+  return g;
+}
+function blocResumeEndurance(r) {
+  const b = el("section", `panneau resume-endurance ${r.verdict}`);
+  b.append(el("h2", null, T().end_verdicts[r.verdict] || r.verdict));
+  if (r.verdict === "insuffisant") { b.append(el("p", "aide", t("end_insuffisant"))); return b; }
+  b.append(el("p", null, t("end_phrase", r, f)));
+  const dl = el("dl", "lignes-mesure");
+  const lignes = [[t("end_debut"), `${f(r.debit_debut, 1)} tok/s`], [t("end_fin"), `${f(r.debit_fin, 1)} tok/s`],
+    [t("end_baisse"), `${f(r.baisse_pct, 0)} %`], [t("end_decroche"), r.decroche_s != null ? duree(r.decroche_s) : t("end_jamais")],
+    [t("end_temp"), r.temp_max != null ? `${f(r.temp_debut, 0)} → ${f(r.temp_max, 0)} °C` : "–"],
+    [t("end_tokens"), f(r.tokens, 0)]];
+  if (r.joules_par_token) lignes.push([t("end_energie"), `${f(r.joules_par_token, 2)} J/token · ${f(r.puissance_moy_w, 1)} W`]);
+  for (const [k, v] of lignes) dl.append(el("dt", null, k), el("dd", null, v));
+  b.append(dl);
+  return b;
+}
+
+async function pageEndurance() {
+  const zone = $("page");
+  zone.className = "page";
+  await chargerOllama();
+  const tete = titrePage(t("end_titre"), t("end_sous"));
+  if (!etat.installes.length) {
+    const vide = el("section", "panneau vide-grand");
+    const l = el("a", "bouton principal", t("og_decouvrir"));
+    l.href = "#/decouvrir";
+    vide.append(el("h2", null, t("mm_vide_titre")), el("p", "aide", t("mm_vide_texte")), l);
+    zone.replaceChildren(tete, vide);
+    return;
+  }
+  const form = el("section", "panneau end-form");
+  const choix = el("select");
+  for (const m of etat.installes) choix.append(new Option(m.nom, m.nom));
+  const demande = route().params.nom;
+  if (demande && etat.installes.some((m) => m.nom === demande)) choix.value = demande;
+  const durees = el("select");
+  for (const d of [60, 180, 300, 600, 1200]) durees.append(new Option(d < 120 ? t("end_1min") : t("end_min", d / 60), d));
+  durees.value = "300";
+  const bLancer = bouton(t("end_lancer"), "principal", () => lancer());
+  const acts = el("div", "acts");
+  acts.append(bLancer);
+  const ligne = el("div", "end-ligne");
+  ligne.append(champ(t("cmp_modele"), choix), champ(t("end_duree"), durees), acts);
+  form.append(ligne, el("p", "aide", t("end_attention")));
+  const direct = el("div", "end-direct");
+  direct.setAttribute("aria-live", "polite");
+  const historique = el("div", "end-historique");
+  zone.replaceChildren(tete, form, direct, historique);
+
+  async function montrerHistorique() {
+    let liste = [];
+    try { liste = await json("/api/endurances"); } catch { /* sans importance */ }
+    if (!liste.length) { historique.replaceChildren(); return; }
+    const st = el("div", "section-titre");
+    st.append(el("span", "libelle", t("end_precedents")));
+    const items = liste.map((e) => {
+      const d = el("details", "end-ancien");
+      const s = el("summary");
+      s.append(el("span", "mono", e.modele), el("span", `pastille-end ${e.resume.verdict}`, T().end_verdicts[e.resume.verdict] || ""),
+        el("span", "aide", `${duree(e.duree_s)} · ${e.resume.baisse_pct != null ? `−${f(e.resume.baisse_pct, 0)} %` : ""} · ${dateCourte(e.cree * 1000)}`));
+      d.append(s);
+      d.addEventListener("toggle", () => {
+        if (d.open && d.children.length === 1) d.append(graphiqueEndurance(e.points, e.duree_s), blocResumeEndurance(e.resume));
+      }, { once: false });
+      return d;
+    });
+    historique.replaceChildren(st, ...items);
+  }
+
+  let controle = null;
+  async function lancer() {
+    if (controle) { controle.abort(); return; }
+    const nom = choix.value, dureeS = Number(durees.value);
+    controle = new AbortController();
+    bLancer.textContent = t("end_arreter");
+    choix.disabled = durees.disabled = true;
+    const points = [];
+    const etatDirect = el("p", "aide end-etat", t("end_demarre"));
+    const zoneGraph = el("div");
+    const rendre = () => zoneGraph.replaceChildren(graphiqueEndurance(points, dureeS));
+    rendre();
+    const panneau = el("section", "panneau");
+    panneau.append(etatDirect, zoneGraph);
+    direct.replaceChildren(panneau);
+    try {
+      const r = await poster("/api/endurance", { nom, duree_s: dureeS }, controle.signal);
+      if (!r.ok) throw new Error(await messageErreur(r));
+      for await (const evt of ndjson(r)) {
+        if (evt.type === "point") {
+          points.push(evt);
+          etatDirect.textContent = t("end_progression", duree(evt.t), duree(Math.max(0, dureeS - evt.t)), f(evt.tokens, 0));
+          rendre();
+        } else if (evt.type === "fin") {
+          etatDirect.textContent = t("end_termine");
+          direct.append(blocResumeEndurance(evt.resume));
+          montrerHistorique();
+        } else if (evt.type === "erreur") throw new Error(evt.erreur);
+      }
+    } catch (err) {
+      etatDirect.textContent = err.name === "AbortError" ? t("end_arrete") : err.message;
+      etatDirect.className = err.name === "AbortError" ? "aide end-etat" : "erreur-bloc";
+    } finally {
+      controle = null;
+      bLancer.textContent = t("end_lancer");
+      choix.disabled = durees.disabled = false;
+    }
+  }
+  montrerHistorique();
+}
+
+// --- page Fiche : tout ce qui a été mesuré sur cette carte, à imprimer ou à partager ----------
+// Imprimer -> « Enregistrer au format PDF » dans le navigateur ; JSON : les mesures brutes.
+
+async function pageFiche() {
+  const zone = $("page");
+  zone.className = "page fiche-page";
+  const [diag, endurances, calib] = await Promise.all([
+    json("/api/diagnostic").catch(() => null), json("/api/endurances").catch(() => []),
+    json("/api/calibration").catch(() => null), chargerBancs(), chargerOllama()]);
+  const bancs = derniersParModele();
+  const derniereEndurance = new Map();
+  for (const e of endurances) if (!derniereEndurance.has(e.modele)) derniereEndurance.set(e.modele, e);
+  const m = etat.metrique || {};
+  const faits = diag?.faits || {};
+  const maintenant = new Date();
+  const carte = faits.carte || m.machine || "–";
+
+  const imprimer = bouton(t("fi_imprimer"), "principal", () => print());
+  const exporter = bouton(t("fi_json"), "", () => {
+    const donnees = { edgefit: $("version-app")?.textContent || "edgefit", genere: maintenant.toISOString(), carte,
+      memoire_go: m.ram_totale_go, ollama: faits.ollama_version, jetpack: faits.jetpack, l4t: faits.l4t, mode: faits.mode,
+      bancs: bancs.map((b) => ({ modele: b.modele, protocole: b.protocole, num_ctx: b.num_ctx, mesures: b.mesures, score: b.score, date: new Date(b.cree * 1000).toISOString() })),
+      endurances: [...derniereEndurance.values()].map((e) => ({ modele: e.modele, duree_s: e.duree_s, resume: e.resume, points: e.points })),
+      calibration: calib ? { observations: calib.n, erreur_brute_pct: calib.erreur_brute_pct, erreur_corrigee_pct: calib.erreur_corrigee_pct } : null };
+    const a = el("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(donnees, null, 2)], { type: "application/json" }));
+    a.download = `edgefit-${carte.replace(/[^\w.-]+/g, "-").toLowerCase()}-${maintenant.toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+  const acts = el("div", "acts sans-impression");
+  acts.append(exporter, imprimer);
+  const tete = titrePage(t("fi_titre"), t("fi_sous", maintenant.toLocaleString(etat.langue === "fr" ? "fr-FR" : "en-GB")), acts);
+
+  const identite = el("section", "panneau fiche-bloc");
+  const dl = el("dl", "lignes-mesure fiche-identite");
+  const ligne = (k, v) => { if (v != null && v !== "") dl.append(el("dt", null, k), el("dd", null, String(v))); };
+  ligne(t("fi_carte"), carte);
+  ligne(t("fi_memoire"), m.ram_totale_go ? go(m.ram_totale_go, 1) : null);
+  ligne("JetPack", faits.jetpack ? `${faits.jetpack}${faits.l4t ? ` (L4T ${faits.l4t})` : ""}` : null);
+  ligne(t("fi_mode"), faits.mode);
+  ligne("Ollama", faits.ollama_version);
+  ligne(t("fi_disque"), faits.disque_libre_go ? `${go(faits.disque_libre_go, 0)} / ${go(faits.disque_total_go, 0)}` : null);
+  identite.append(el("h2", null, t("fi_identite")), dl);
+
+  const blocBancs = el("section", "panneau fiche-bloc");
+  blocBancs.append(el("h2", null, t("fi_bancs", bancs.length)));
+  if (bancs.length) {
+    const enveloppe = el("div", "md-table fiche-table");
+    const table = el("table");
+    const tr = el("tr");
+    for (const k of T().fi_colonnes) tr.append(el("th", null, k));
+    const thead = el("thead");
+    thead.append(tr);
+    const tbody = el("tbody");
+    for (const b of [...bancs].sort((x, y) => (y.score?.score || 0) - (x.score?.score || 0))) {
+      const x = b.mesures;
+      const r = el("tr");
+      for (const v of [b.modele, `${f(x.debit_tokens_s, 1)}`, `${f(x.ttft_s, 2)} s`, x.chargement_s ? `${f(x.chargement_s, 1)} s` : "–",
+        x.memoire_go ? go(x.memoire_go, 2) : "–", x.joules_par_token ? f(x.joules_par_token, 2) : x.tokens_par_joule ? f(1 / x.tokens_par_joule, 2) : "–",
+        String(b.score?.score ?? "–")]) r.append(el("td", null, v));
+      r.firstChild.className = "mono";
+      tbody.append(r);
+    }
+    table.append(thead, tbody);
+    enveloppe.append(table);
+    blocBancs.append(enveloppe, el("p", "aide", t("fi_protocole")));
+  } else {
+    const l = el("a", "lien-discret", t("fi_aucun_banc"));
+    l.href = "#/bancs";
+    blocBancs.append(l);
+  }
+
+  const blocEnd = el("section", "panneau fiche-bloc");
+  blocEnd.append(el("h2", null, t("fi_endurance")));
+  if (derniereEndurance.size) {
+    for (const e of derniereEndurance.values()) {
+      const r = e.resume;
+      const p = el("p", "fiche-endurance");
+      p.append(el("strong", "mono", e.modele), ` · ${duree(e.duree_s)} · `, el("span", `pastille-end ${r.verdict}`, T().end_verdicts[r.verdict] || r.verdict));
+      if (r.debit_debut) p.append(` · ${f(r.debit_debut, 1)} → ${f(r.debit_fin, 1)} tok/s (−${f(r.baisse_pct, 0)} %)${r.temp_max != null ? ` · ${f(r.temp_max, 0)} °C max` : ""}`);
+      blocEnd.append(p);
+    }
+  } else {
+    const l = el("a", "lien-discret", t("fi_aucune_endurance"));
+    l.href = "#/endurance";
+    blocEnd.append(l);
+  }
+
+  const blocCal = el("section", "panneau fiche-bloc");
+  blocCal.append(el("h2", null, t("fi_calibration")),
+    el("p", null, calib?.active ? t("fi_cal_active", calib.n, f(calib.erreur_brute_pct, 0), f(calib.erreur_corrigee_pct, 0)) : t("fi_cal_inactive", calib?.n || 0, calib?.min_points || 3)));
+
+  zone.replaceChildren(tete, identite, blocBancs, blocEnd, blocCal, el("p", "aide fiche-pied", t("fi_pied")));
 }
 
 async function lancerBanc(nom, zone, etiquette = null) {

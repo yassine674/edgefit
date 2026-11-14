@@ -2,6 +2,7 @@
 # plus les alertes d'alimentation et de bridage données par `vcgencmd get_throttled`.
 # Une alimentation trop faible fait baisser la fréquence du CPU, donc le débit en tokens/s :
 # c'est la première chose à vérifier quand une mesure semble anormalement lente.
+import re
 import shutil
 import subprocess
 
@@ -14,6 +15,19 @@ ALERTES_BRIDAGE = {
     2: "CPU bridé en ce moment",
     3: "limite de température atteinte",
 }
+
+
+_RE_PMIC = re.compile(r"^\s*(\S+)_([AV]) (?:current|volt)\(\d+\)=([\d.]+)[AV]\s*$", re.M)
+
+
+def puissance_pmic(sortie):
+    """Raspberry Pi 5 : `vcgencmd pmic_read_adc` donne courant (…_A) et tension (…_V) de chaque ligne
+    d'alimentation ; leur produit, sommé, approche la puissance de la carte (sans les ports USB)."""
+    courants, tensions = {}, {}
+    for nom, genre, valeur in _RE_PMIC.findall(sortie):
+        (courants if genre == "A" else tensions)[nom] = float(valeur)
+    total = sum(courants[n] * tensions[n] for n in courants if n in tensions)
+    return round(total, 2) if total > 0 else None
 
 
 def alertes_depuis_registre(valeur):
@@ -36,7 +50,18 @@ class FournisseurRaspberry(FournisseurGenerique):
         except (OSError, subprocess.SubprocessError, IndexError, ValueError):
             return 0
 
+    def _puissance(self):
+        if not self.vcgencmd:
+            return None
+        try:
+            sortie = subprocess.run([self.vcgencmd, "pmic_read_adc"], capture_output=True, text=True, timeout=2).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return puissance_pmic(sortie)  # None sur Pi 4 et plus anciens : pas de PMIC lisible
+
     def lire(self):
         m = super().lire()
         m["alertes"] = alertes_depuis_registre(self._registre_bridage())
+        if (p := self._puissance()) is not None:
+            m["puissance_w"], m["source_puissance"] = p, "pmic"
         return m

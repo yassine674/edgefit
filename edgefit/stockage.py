@@ -54,6 +54,15 @@ CREATE TABLE IF NOT EXISTS bancs (
     mesures_json TEXT NOT NULL,
     cree REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS endurances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    modele TEXT NOT NULL,
+    duree_s INTEGER NOT NULL,
+    num_ctx INTEGER NOT NULL,
+    resume_json TEXT NOT NULL,
+    points_json TEXT NOT NULL,
+    cree REAL NOT NULL
+);
 """
 
 
@@ -156,9 +165,23 @@ def lister_bancs():
                 for r in c.execute("SELECT * FROM bancs ORDER BY cree DESC")]
 
 
+def ajouter_endurance(modele, duree_s, num_ctx, resume, points):
+    with connexion() as c:
+        cur = c.execute("INSERT INTO endurances (modele, duree_s, num_ctx, resume_json, points_json, cree) VALUES (?,?,?,?,?,?)",
+                        (modele, duree_s, num_ctx, json.dumps(resume), json.dumps(points), time.time()))
+        return cur.lastrowid
+
+
+def lister_endurances(limite=50):
+    with connexion() as c:
+        return [{"id": r["id"], "modele": r["modele"], "duree_s": r["duree_s"], "num_ctx": r["num_ctx"], "cree": r["cree"],
+                 "resume": json.loads(r["resume_json"]), "points": json.loads(r["points_json"])}
+                for r in c.execute("SELECT * FROM endurances ORDER BY cree DESC LIMIT ?", (limite,))]
+
+
 def tout_effacer(table):
-    """Efface toutes les conversations (et leurs messages) ou tous les bancs d'essai."""
-    assert table in ("conversations", "bancs", "observations")
+    """Efface toutes les conversations (et leurs messages), tous les bancs d'essai, etc."""
+    assert table in ("conversations", "bancs", "observations", "endurances")
     with connexion() as c:
         return c.execute(f"DELETE FROM {table}").rowcount
 
@@ -166,7 +189,7 @@ def tout_effacer(table):
 def exporter():
     with connexion() as c:
         convs = [lire_conversation(r["id"], c) for r in c.execute("SELECT id FROM conversations ORDER BY id")]
-    return {"conversations": convs, "bancs": lister_bancs()}
+    return {"conversations": convs, "bancs": lister_bancs(), "endurances": lister_endurances(1000)}
 
 
 # --- calibration : mémoire estimée contre mémoire mesurée, par carte ------------------------

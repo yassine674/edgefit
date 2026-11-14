@@ -65,6 +65,13 @@ def resumer(essais, chargement_s, memoire_go, marge_libre, puissance_w):
     m = {"debit_tokens_s": debit, "ttft_s": ttft, "debit_prefill_tokens_s": prefill,
          "chargement_s": chargement_s, "memoire_go": memoire_go, "marge_libre": marge_libre,
          "puissance_w": puissance_w}
-    # tokens par joule : énergie de la carte entière (VDD_IN), pas seulement du GPU
-    m["tokens_par_joule"] = debit / puissance_w if puissance_w else None
+    # énergie : médiane des essais à chaud, mesurée pendant l'écriture seulement (voir energie.py)
+    jpt = [e["joules_par_token"] for e in essais if e.get("joules_par_token")]
+    if jpt:
+        m["joules_par_token"] = statistics.median(jpt)
+        m["joules_par_token_net"] = statistics.median(e.get("joules_par_token_net", 0) for e in essais if e.get("joules_par_token"))
+        m["source_puissance"] = next((e.get("source_puissance") for e in essais if e.get("source_puissance")), None)
+        m["tokens_par_joule"] = 1 / m["joules_par_token"]
+    else:  # ancienne méthode : puissance moyenne sur tout le banc
+        m["tokens_par_joule"] = debit / puissance_w if puissance_w else None
     return m

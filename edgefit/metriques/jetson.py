@@ -48,4 +48,6 @@ class FournisseurJetson(FournisseurGenerique):
         m = super().lire()
         # psutil reste la source pour le CPU et la RAM ; tegrastats complète le reste
         m.update({cle: valeur for cle, valeur in self._derniere.items() if valeur is not None})
+        if m.get("puissance_w") is not None:
+            m["source_puissance"] = "carte"  # VDD_IN : toute la carte (CPU, GPU, mémoire)
         return m

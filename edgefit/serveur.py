@@ -3,6 +3,7 @@
 # code interne : elle pourrait être servie ailleurs sans rien changer côté serveur.
 import asyncio
 import json
+from contextlib import aclosing
 import os
 import shutil
 from pathlib import Path
@@ -13,7 +14,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from pydantic import AfterValidator, BaseModel, Field
 
-from . import banc, calibration, outils, stockage
+from . import banc, calibration, endurance, objectif, outils, stockage
+from .energie import Releveur
 from .catalogue import SUGGESTIONS, Catalogue, depot_valide
 from .diagnostic import dossier_modeles
 from .compatibilite import OCTETS_KV, _verdict, analyser, budget, estimer, plateforme_correspondante, solutions, verdict_rapide
@@ -44,9 +46,14 @@ class DemandeTelechargement(BaseModel):
     nom: NomModele
 
 
+# image jointe : base64 brut (sans « data:image/...; »), au plus ≈ 6 Mo ; la page les réduit à 1024 px
+ImageB64 = Annotated[str, Field(min_length=16, max_length=8_000_000, pattern=r"^[A-Za-z0-9+/]+={0,2}$")]
+
+
 class Message(BaseModel):
     role: Literal["user", "assistant"]
     content: str = Field(max_length=20_000)
+    images: list[ImageB64] = Field(default=[], max_length=4)  # modèles de vision (moondream, llava, qwen2.5vl...)
 
 
 # bornes larges : Ollama accepte jusqu'au contexte maximal du modèle (128K pour Llama 3.1...)
@@ -71,6 +78,11 @@ class DemandeChat(BaseModel):
 
 class DemandeModele(BaseModel):
     nom: NomModele
+
+
+class DemandeEndurance(BaseModel):
+    nom: NomModele
+    duree_s: Literal[endurance.DUREES_S]
 
 
 class DemandeConversation(BaseModel):
@@ -298,6 +310,19 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
         return await ollama.modeles()
 
     # nom en paramètre de requête : les noms Ollama contiennent "/" et ":"
+    @app.get("/api/modeles/capacites")
+    async def capacites(nom: str):
+        """["completion", "tools", "vision", ...] d'après Ollama ; null si Ollama est trop ancien pour le dire."""
+        if not nom_valide(nom):
+            raise HTTPException(400, "nom de modèle invalide")
+        try:
+            infos = await ollama.infos(nom)
+        except ModeleInconnu:
+            infos = None
+        if infos is None:
+            raise HTTPException(404, "modèle non installé")
+        return {"nom": nom, "capacites": infos.get("capacites")}
+
     @app.get("/api/modeles/architecture")
     async def architecture(nom: str):
         if not nom_valide(nom):
@@ -315,7 +340,8 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
     async def chat(demande: DemandeChat):
         if occupation.banc:
             raise HTTPException(409, {"code": "banc_en_cours", "message": f"banc d'essai en cours ({occupation.banc})"})
-        messages = [m.model_dump() for m in demande.messages]
+        # « images » seulement quand il y en a : Ollama les envoie au modèle de vision
+        messages = [m.model_dump(exclude={"images"} if not m.images else None) for m in demande.messages]
         envoyes = ([{"role": "system", "content": demande.systeme}] if demande.systeme.strip() else []) + messages
         options = {"num_ctx": demande.num_ctx}
         if demande.temperature is not None:
@@ -323,7 +349,10 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
         if demande.conversation_id is not None:
             if await asyncio.to_thread(stockage.lire_conversation, demande.conversation_id) is None:
                 raise HTTPException(404, {"code": "conversation", "message": "conversation introuvable"})
-            await asyncio.to_thread(stockage.ajouter_message, demande.conversation_id, "user", messages[-1]["content"])
+            # les images ne sont pas gardées (une carte SD n'est pas faite pour ça) : seulement leur nombre
+            n_images = len(demande.messages[-1].images)
+            await asyncio.to_thread(stockage.ajouter_message, demande.conversation_id, "user", messages[-1]["content"],
+                                    {"images": n_images} if n_images else None)
 
         autorises = set(demande.outils)
         if autorises and await sait_appeler_des_outils(demande.modele) is False:
@@ -336,7 +365,9 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
             occupation.entrer(demande.modele)
             texte, mesures, faits = [], None, []
             historique = list(envoyes)
+            releveur = None
             try:
+                releveur = await Releveur(fournisseur).demarrer()  # puissance de la carte pendant la réponse
                 if sans_outils:
                     yield {"type": "outils_indisponibles"}
                 # boucle : tant que le modèle demande des outils, edgefit les exécute et lui renvoie
@@ -358,6 +389,7 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
                         if evt["type"] == "token":
                             texte.append(evt["texte"])
                             texte_tour.append(evt["texte"])
+                            releveur.token()
                         elif evt["type"] == "fin":
                             mesures = evt["metriques"]
                             if appels:
@@ -366,6 +398,7 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
                                 await observer(demande.modele, demande.num_ctx, demande.type_kv, mesures["memoire_chargee_go"])
                             if faits:
                                 mesures["outils"] = faits
+                            mesures.update(releveur.resumer(mesures))
                         yield evt
                     if not appels:
                         break
@@ -380,6 +413,8 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
                         yield {"type": "outil_resultat", "nom": a["nom"], "arguments": a["arguments"], "resultat": resultat}
                         historique.append({"role": "tool", "content": outils.pour_le_modele(resultat), "tool_name": a["nom"]})
             finally:
+                if releveur:
+                    releveur.arreter()
                 occupation.sortir(demande.modele)
                 # une seule écriture par réponse, même si le navigateur coupe en cours de route
                 if demande.conversation_id is not None and texte:
@@ -402,8 +437,8 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
         return versions
 
     # --- catalogue : verdict de chaque modèle suggéré, en une requête, sans réseau ---
-    @app.get("/api/catalogue")
-    async def catalogue_carte(num_ctx: Contexte = 4096, type_kv: TypeKV = "f16"):
+    async def modeles_carte(num_ctx, type_kv):
+        """Le catalogue vu depuis cette carte : verdict mémoire, plafond de vitesse, dernière mesure."""
         b, charges, memoire = await budget_actuel()
         noms_installes = {m["nom"] for m in await installes()}
         plateforme = await asyncio.to_thread(plateforme_correspondante, getattr(fournisseur, "carte", None))
@@ -426,11 +461,26 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
             modeles.append({**{k: e[k] for k in ("nom", "description", "famille", "parametres", "format", "vision", "tags")},
                             "taille_go": (e["taille_octets"] + e["projecteur_octets"]) / GO,
                             "installe": e["nom"] in noms_installes, **v,
-                            "score": banc.score(mesure["mesures"]) if mesure else None})
+                            "score": banc.score(mesure["mesures"]) if mesure else None,
+                            "debit_mesure": mesure["mesures"].get("debit_tokens_s") if mesure else None})
+        return b, charges, calib, plateforme, modeles
+
+    @app.get("/api/catalogue")
+    async def catalogue_carte(num_ctx: Contexte = 4096, type_kv: TypeKV = "f16"):
+        b, charges, calib, plateforme, modeles = await modeles_carte(num_ctx, type_kv)
         return {"budget_go": {k: v / GO for k, v in b.items()}, "num_ctx": num_ctx, "type_kv": type_kv,
                 "calibration": {k: calib[k] for k in ("n", "active")},
                 "plateforme": plateforme["name"] if plateforme else None, "modeles": modeles,
                 "charges": [{"nom": m["nom"], "taille_go": m["taille"] / GO} for m in charges]}
+
+    @app.get("/api/objectif")
+    async def choisir(usage: Literal[objectif.USAGES] | None = None, debit_min: Annotated[float, Field(ge=0, le=200)] = 0,
+                      num_ctx: Contexte = 4096, type_kv: TypeKV = "f16"):
+        b, _, _, plateforme, modeles = await modeles_carte(num_ctx, type_kv)
+        rend, n = objectif.rendement((m["debit_mesure"], m["plafond_tokens_s"]) for m in modeles)
+        return {"rendement": rend, "rendement_mesures": n, "plateforme": plateforme["name"] if plateforme else None,
+                "budget_go": b["utilisable"] / GO, "num_ctx": num_ctx, "usage": usage, "debit_min": debit_min,
+                **objectif.classer(modeles, usage, debit_min, rend)}
 
     # --- modèles installés ---
     @app.get("/api/charges")
@@ -486,6 +536,62 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
         return {"ok": await asyncio.to_thread(stockage.supprimer_conversation, id_conv)}
 
     # --- banc d'essai et score ---
+    # --- endurance : le modèle écrit sans arrêt, on suit débit, température et puissance -------
+    @app.get("/api/endurances")
+    async def endurances():
+        return await asyncio.to_thread(stockage.lister_endurances)
+
+    @app.delete("/api/endurances")
+    async def effacer_endurances():
+        return {"effaces": await asyncio.to_thread(stockage.tout_effacer, "endurances")}
+
+    @app.post("/api/endurance")
+    async def lancer_endurance(demande: DemandeEndurance):
+        if occupation.banc or occupation.total():
+            raise HTTPException(409, {"code": "carte_occupee", "message": "la carte est déjà utilisée"})
+        occupation.banc = demande.nom
+
+        async def deroule():
+            points, tokens = [], 0
+            depart = endurance.horloge()
+            try:
+                yield {"type": "debut", "duree_s": demande.duree_s, "fenetre_s": endurance.FENETRE_S}
+                fenetre = endurance.Fenetre(0.0)
+                n = 0
+                while endurance.horloge() - depart < demande.duree_s:
+                    n += 1
+                    options = {"num_ctx": endurance.NUM_CTX, "num_predict": endurance.NUM_PREDICT, "temperature": 0.7}
+                    message = [{"role": "user", "content": endurance.CONSIGNE.format(n=n)}]
+                    precedent = None  # instant du token précédent DANS cette requête
+                    async with aclosing(ollama.discuter(demande.nom, message, options)) as flux:
+                        async for evt in flux:
+                            if evt["type"] == "erreur":
+                                raise RuntimeError(evt["erreur"])
+                            if evt["type"] != "token":
+                                continue
+                            maintenant = endurance.horloge()
+                            tokens += 1
+                            if precedent is not None:
+                                fenetre.ajouter(maintenant - precedent)
+                            precedent = maintenant
+                            ecoule = maintenant - depart
+                            if ecoule - fenetre.debut >= endurance.FENETRE_S:
+                                mesure = await asyncio.to_thread(fournisseur.lire)
+                                p = endurance.point(ecoule, fenetre.debit(), mesure)
+                                points.append(p)
+                                yield {"type": "point", **p, "tokens": tokens}
+                                fenetre = endurance.Fenetre(ecoule)
+                            if ecoule >= demande.duree_s:
+                                break
+                resume = endurance.resumer(points, demande.duree_s, tokens)
+                await asyncio.to_thread(stockage.ajouter_endurance, demande.nom, demande.duree_s, endurance.NUM_CTX, resume, points)
+                yield {"type": "fin", "resume": resume, "points": points}
+            except (RuntimeError, ModeleInconnu) as e:
+                yield {"type": "erreur", "erreur": str(e)}
+            finally:
+                occupation.banc = None
+        return _ndjson(ollama, deroule())
+
     @app.get("/api/bancs")
     async def bancs():
         return [_avec_score(e) for e in await asyncio.to_thread(stockage.lister_bancs)]
@@ -512,11 +618,17 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
 
             async def essai(texte):
                 options = {"num_ctx": banc.NUM_CTX, "num_predict": banc.NUM_PREDICT, "temperature": 0, "seed": 42}
-                async for evt in ollama.discuter(demande.nom, [{"role": "user", "content": texte}], options):
-                    if evt["type"] == "erreur":
-                        raise RuntimeError(evt["erreur"])
-                    if evt["type"] == "fin":
-                        return evt["metriques"]
+                releveur = await Releveur(fournisseur).demarrer()
+                try:
+                    async for evt in ollama.discuter(demande.nom, [{"role": "user", "content": texte}], options):
+                        if evt["type"] == "erreur":
+                            raise RuntimeError(evt["erreur"])
+                        if evt["type"] == "token":
+                            releveur.token()
+                        if evt["type"] == "fin":
+                            return evt["metriques"] | releveur.resumer(evt["metriques"])
+                finally:
+                    releveur.arreter()
 
             releve = asyncio.create_task(relever())
             try:

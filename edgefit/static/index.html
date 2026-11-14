@@ -20,6 +20,7 @@
       <symbol id="i-materiel" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></g></symbol>
       <symbol id="i-reglages" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></g></symbol>
       <symbol id="i-comparer" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v16M16 4v16"/><path d="M4 8l4-4 4 4M12 16l4 4 4-4"/></g></symbol>
+      <symbol id="i-image" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="M20.5 16l-5-5-8.5 8.5"/></g></symbol>
       <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
       <symbol id="i-envoyer" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
       <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
@@ -45,12 +46,9 @@
       <button type="button" class="bouton-nouveau" id="nouvelle-conv"><svg width="16" height="16"><use href="#i-plus"/></svg><span data-t="nouvelle_conv"></span></button>
       <nav class="conversations" id="liste-conv" aria-label="Conversations"></nav>
       <nav class="nav" aria-label="Navigation">
-        <a href="#/decouvrir" data-page="decouvrir"><svg><use href="#i-decouvrir"/></svg><span data-t="nav_decouvrir"></span></a>
-        <a href="#/modeles" data-page="modeles"><svg><use href="#i-modeles"/></svg><span data-t="nav_modeles"></span><span class="compte" id="compte-modeles"></span></a>
-        <a href="#/comparer" data-page="comparer"><svg><use href="#i-comparer"/></svg><span data-t="nav_comparer"></span></a>
-        <a href="#/bancs" data-page="bancs"><svg><use href="#i-bancs"/></svg><span data-t="nav_bancs"></span></a>
-        <a href="#/materiel" data-page="materiel"><svg><use href="#i-materiel"/></svg><span data-t="nav_materiel"></span></a>
-        <a href="#/reglages" data-page="reglages"><svg><use href="#i-reglages"/></svg><span data-t="nav_reglages"></span></a>
+        <a href="#/decouvrir" data-groupe="modeles"><svg><use href="#i-modeles"/></svg><span data-t="nav_g_modeles"></span><span class="compte" id="compte-modeles"></span></a>
+        <a href="#/bancs" data-groupe="mesurer"><svg><use href="#i-bancs"/></svg><span data-t="nav_g_mesurer"></span></a>
+        <a href="#/materiel" data-groupe="carte"><svg><use href="#i-materiel"/></svg><span data-t="nav_g_carte"></span></a>
       </nav>
       <div class="pied-barre">
         <button type="button" class="lien-discret" id="bouton-langue">EN</button>
@@ -63,6 +61,7 @@
         <button type="button" class="bouton petit" id="ouvrir-barre" aria-controls="barre" aria-expanded="false"><svg><use href="#i-menu"/></svg><span class="sr-only">Menu</span></button>
         <span class="titre" id="titre-mobile">edgefit</span>
       </header>
+      <nav class="onglets" id="onglets" hidden></nav>
       <div class="banniere" id="banniere" hidden role="status"></div>
       <main id="page"></main>
     </div>

@@ -6,6 +6,7 @@ import json
 import re
 import time
 
+from .metriques import factice as carte_simulee
 from .ollama import ModeleInconnu, metriques_inference
 
 NS = 1e9
@@ -29,6 +30,12 @@ def _architecture(nom):
     from .catalogue import SUGGESTIONS
     entree = next((e for e in SUGGESTIONS if e["nom"] == nom), None)
     return entree["architecture"] if entree else ARCHITECTURES["qwen2.5:0.5b"]
+
+
+def _vision(nom):
+    from .catalogue import SUGGESTIONS
+    entree = next((e for e in SUGGESTIONS if e["nom"] == nom), None)
+    return bool(entree and entree.get("vision")) or any(k in nom for k in ("llava", "moondream", "vl", "vision"))
 
 
 def _appel_simule(question, installes):
@@ -76,7 +83,8 @@ class OllamaFactice:
         return {"taille_octets": int(modele["taille_go"] * 1024 ** 3),
                 "architecture": _architecture(nom),
                 "format": modele["quantification"] or "Q4_K_M",
-                "capacites": ["completion"] + ([] if nom in self._sans_outils else ["tools"])}
+                "capacites": ["completion"] + ([] if nom in self._sans_outils else ["tools"])
+                + (["vision"] if _vision(nom) else [])}
 
     async def charges(self):
         if self._charge is None:
@@ -134,7 +142,8 @@ class OllamaFactice:
         self._charge = (nom, (options or {}).get("num_ctx", 4096))
         taille_go = next(m["taille_go"] for m in self._installes if m["nom"] == nom)
         # vitesse simulée plausible : un modèle deux fois plus gros génère deux fois moins vite
-        debit = min(80.0, 25.0 / max(taille_go, 0.25))
+        # et la carte simulée ralentit quand elle chauffe (bridage thermique)
+        debit = min(80.0, 25.0 / max(taille_go, 0.25)) * carte_simulee.bridage()
         debut = time.perf_counter()
         question = messages[-1]["content"]
         if messages[-1]["role"] == "tool":
@@ -143,16 +152,38 @@ class OllamaFactice:
             reponse = (f"D'après l'outil {messages[-1].get('tool_name', '')} : "
                        + " ; ".join(f"{k} = {v}" for k, v in resultat.items() if not isinstance(v, (list, dict)))
                        + ". (Réponse simulée, mode --fake.)").split(" ")
+        elif messages[-1].get("images"):
+            n = len(messages[-1]["images"])
+            reponse = (f"Je vois {n} image{'s' if n > 1 else ''} (réponse simulée de {nom}, mode --fake : "
+                       "un vrai modèle de vision décrirait ici son contenu).").split(" ")
+        elif re.search(r"exemple|example|code|markdown", question, re.I):
+            # réponse mise en forme, comme celles des vrais modèles (titres, listes, tableau, code)
+            reponse = (f"## Réponse simulée de {nom}\n\nLe **cache KV** garde, pour chaque token déjà lu, "
+                       "ses clés et ses valeurs : le modèle ne les recalcule pas.\n\n"
+                       "- par token : `2 × couches × têtes KV × dim tête × octets`\n"
+                       "- croît *linéairement* avec le contexte\n  - 4K tokens : 0,44 Go\n  - 32K tokens : 3,5 Go\n\n"
+                       "| Contexte | Cache KV |\n|---|---:|\n| 4 096 | 0,44 Go |\n| 32 768 | 3,50 Go |\n\n"
+                       "```python\ndef cache_kv(couches, tetes_kv, dim, contexte, octets=2):\n"
+                       "    return 2 * couches * tetes_kv * dim * contexte * octets\n```\n\n"
+                       "> Mesures inventées (mode --fake). Source : [Ollama](https://ollama.com).").split(" ")
         else:
             reponse = (f"Réponse simulée (mode --fake) de {nom} à : « {question[:80]} ». "
                        "Les mesures affichées ci-dessous sont plausibles pour une Jetson, mais inventées.").split(" ")
+        # num_predict (bancs, endurance) : le modèle simulé écrit jusqu'à la limite demandée
+        voulu = min((options or {}).get("num_predict") or 0, 2000)
+        while len(reponse) < voulu:
+            reponse += reponse[: voulu - len(reponse)]
         if froid and self._pause:
             await asyncio.sleep(0.8 + taille_go)  # chargement simulé, compris dans le premier mot comme en vrai
-        await asyncio.sleep(self._pause * 5)  # prefill
-        premier = time.perf_counter()
-        for i, mot in enumerate(reponse):
-            yield {"type": "token", "texte": mot if i == 0 else " " + mot}
-            await asyncio.sleep(self._pause)
+        carte_simulee.ACTIVITE["generation"] += 1
+        try:
+            await asyncio.sleep(self._pause * 5)  # prefill
+            premier = time.perf_counter()
+            for i, mot in enumerate(reponse):
+                yield {"type": "token", "texte": mot if i == 0 else " " + mot}
+                await asyncio.sleep(self._pause / carte_simulee.bridage())
+        finally:
+            carte_simulee.ACTIVITE["generation"] -= 1
         tokens_prompt = 4 * len(question.split()) + 20
         fin = {
             "load_duration": (0.8 + taille_go) * NS if froid else 0.01 * NS,
