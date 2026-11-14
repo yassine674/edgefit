@@ -93,8 +93,31 @@ def verifier_memoire():
     return resultats
 
 
-def _dossier_modeles():
-    return Path(os.environ.get("OLLAMA_MODELS") or Path.home() / ".ollama" / "models")
+def dossier_modeles():
+    """Dossier où mesurer l'espace disque libre pour les modèles d'Ollama.
+
+    Installé par son script officiel, Ollama tourne sous son propre utilisateur et range les modèles
+    dans /usr/share/ollama/.ollama/models, illisible pour les autres comptes. Selon la version de
+    Python, Path.exists() y lève PermissionError ou répond False : on interroge donc os.stat, qui
+    distingue « absent » de « interdit ». Si c'est interdit, on remonte au premier dossier parent
+    accessible, qui est sur le même disque."""
+    candidats = [os.environ.get("OLLAMA_MODELS"), "/usr/share/ollama/.ollama/models",  # service systemd
+                 Path.home() / ".ollama" / "models"]
+    for chemin in filter(None, candidats):
+        chemin = Path(chemin)
+        try:
+            os.stat(chemin)
+            return chemin
+        except PermissionError:
+            for parent in chemin.parents:
+                try:
+                    shutil.disk_usage(parent)
+                    return parent
+                except OSError:
+                    continue
+        except OSError:  # absent
+            continue
+    return Path.home()
 
 
 def verifier_ollama(url):
@@ -129,11 +152,10 @@ def verifier_ollama(url):
         resultats.append(("INFO", "Aucun modèle chargé : lancez une question dans le chat puis relancez le diagnostic "
                                   "pour vérifier qu'Ollama utilise bien le GPU"))
 
-    dossier = _dossier_modeles()
-    if dossier.exists():
-        libre = shutil.disk_usage(dossier).free / GIO
-        niveau = "ATTENTION" if libre < 10 else "OK"
-        resultats.append((niveau, f"{libre:.0f} Go libres pour les modèles ({dossier})"))
+    dossier = dossier_modeles()
+    libre = shutil.disk_usage(dossier).free / GIO
+    niveau = "ATTENTION" if libre < 10 else "OK"
+    resultats.append((niveau, f"{libre:.0f} Go libres pour les modèles ({dossier})"))
     return resultats
 
 
@@ -208,9 +230,7 @@ def etat_carte(url_ollama):
                           nom=m["name"], part=round(part * 100))
         except (httpx.HTTPError, ValueError):
             pass
-    dossier = _dossier_modeles()
-    if not dossier.exists():
-        dossier = Path.home()
+    dossier = dossier_modeles()
     disque = shutil.disk_usage(dossier)
     faits.update(dossier=str(dossier), disque_libre_go=disque.free / GIO, disque_total_go=disque.total / GIO)
     ajout("ATTENTION" if disque.free / GIO < 10 else "OK", "disque", libre_go=round(disque.free / GIO, 1))

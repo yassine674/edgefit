@@ -15,6 +15,7 @@ from pydantic import AfterValidator, BaseModel, Field
 
 from . import banc, calibration, outils, stockage
 from .catalogue import SUGGESTIONS, Catalogue, depot_valide
+from .diagnostic import dossier_modeles
 from .compatibilite import OCTETS_KV, _verdict, analyser, budget, estimer, plateforme_correspondante, solutions, verdict_rapide
 from .ollama import GO, ModeleInconnu, OllamaIndisponible, nom_valide
 from .registre import Registre, RegistreErreur
@@ -103,16 +104,6 @@ class DemandeCompatibilite(BaseModel):
     # réglage global du serveur Ollama (OLLAMA_KV_CACHE_TYPE), que l'API ne permet pas de lire
     type_kv: TypeKV = "f16"
     parallele: int = Field(default=1, ge=1, le=16)  # OLLAMA_NUM_PARALLEL
-
-
-def dossier_modeles():
-    """Dossier où Ollama range ses modèles (pour l'espace disque libre)."""
-    candidats = [os.environ.get("OLLAMA_MODELS"), "/usr/share/ollama/.ollama/models",  # service systemd
-                 str(Path.home() / ".ollama" / "models")]
-    for chemin in candidats:
-        if chemin and Path(chemin).exists():
-            return Path(chemin)
-    return Path.home()
 
 
 def _message_indisponible(ollama):
@@ -249,8 +240,13 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
 
     @app.get("/api/ollama")
     async def etat_ollama():
-        d = shutil.disk_usage(dossier_modeles())
-        disque = {"libre_go": d.free / GO, "total_go": d.total / GO, "dossier": str(dossier_modeles())}
+        # l'espace disque est un plus : une erreur ici ne doit jamais faire croire qu'Ollama est absent
+        try:
+            dossier = dossier_modeles()
+            d = shutil.disk_usage(dossier)
+            disque = {"libre_go": d.free / GO, "total_go": d.total / GO, "dossier": str(dossier)}
+        except OSError:
+            disque = None
         try:
             return {"disponible": True, "version": await ollama.version(), "url": ollama.url, "disque": disque}
         except OllamaIndisponible:
