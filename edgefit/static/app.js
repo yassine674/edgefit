@@ -1996,43 +1996,27 @@ async function pageChat(id) {
   const numCtx = ch.conv?.num_ctx || etat.numCtx;
 
   const colonne = el("div", "chat-colonne");
+
+  // en haut : la conversation (titre, état du modèle) et un seul bouton pour le panneau latéral
   const barre = el("div", "chat-barre");
-  const choix = el("select");
-  choix.setAttribute("aria-label", t("recherche_label"));
-  for (const m of etat.installes) choix.append(new Option(`${libelleModele(m.nom)} · ${m.quantification || ""}`, m.nom));
-  if (ch.modele) choix.value = ch.modele;
-  choix.disabled = !etat.installes.length;
-  choix.addEventListener("change", async () => {
-    ch.modele = choix.value;
-    garder("edgefit.dernier", ch.modele);
-    if (ch.conv) await fetch(`/api/conversations/${ch.conv.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modele: ch.modele }) });
-    ch.estimation = null;
-    majEtatModele(); rendreMessages(); estimerChat(); majRail(); verifierVision();
-  });
+  const titreConv = el("h1", "chat-titre", ch.conv?.titre || t("chat_bienvenue"));
+  titreConv.id = "chat-titre";
   const etatModele = el("span", "etat-modele");
   etatModele.id = "etat-modele";
-  const bReglages = bouton("", "petit icone-texte", () => { panneauReglages.hidden = !panneauReglages.hidden; });
-  bReglages.append(icone("reglages"), el("span", "txt", t("chat_reglages")));
-  bReglages.setAttribute("aria-label", t("chat_reglages"));
-  const bRail = bouton(t("chat_mesures"), "petit", () => {
+  const ouvrirPanneau = (ouvrir) => {
     const rail = $("rail");
-    if (matchMedia("(max-width: 1100px)").matches) rail.classList.toggle("ouvert");
-    else { ch.rail = !ch.rail; zone.classList.toggle("sans-rail", !ch.rail); garder("edgefit.rail", ch.rail ? "1" : "0"); }
-    bRail.setAttribute("aria-pressed", String(ch.rail));
-  });
-  bRail.textContent = "";
-  bRail.className = "bouton petit icone-texte";
-  bRail.append(icone("mesures"), el("span", "txt", t("chat_mesures")));
-  bRail.setAttribute("aria-label", t("chat_mesures"));
-  const pOutils = el("button", "puce puce-outils");
-  pOutils.type = "button";
-  pOutils.id = "puce-outils";
-  pOutils.addEventListener("click", () => { panneauReglages.hidden = false; panneauReglages.querySelector(".choix-outils input")?.focus(); });
-  barre.append(choix, etatModele, el("span", "espace"), pOutils, bReglages, bRail);
+    if (matchMedia("(max-width: 1100px)").matches) rail.classList.toggle("ouvert", ouvrir ?? !rail.classList.contains("ouvert"));
+    else { ch.rail = ouvrir ?? !ch.rail; zone.classList.toggle("sans-rail", !ch.rail); garder("edgefit.rail", ch.rail ? "1" : "0"); }
+    bRail.setAttribute("aria-pressed", String(ch.rail || rail.classList.contains("ouvert")));
+  };
+  const bRail = bouton("", "petit icone-seule", () => ouvrirPanneau());
+  bRail.append(icone("panneau"));
+  bRail.setAttribute("aria-label", t("chat_panneau"));
+  bRail.title = t("chat_panneau");
+  barre.append(titreConv, etatModele, el("span", "espace"), bRail);
 
-  // réglages de la conversation : instructions, température, contexte
-  const panneauReglages = el("div", "reglages-chat");
-  panneauReglages.hidden = true;
+  // panneau latéral, partie « Conversation » : instructions, température, contexte, outils, voix
+  const panneauReglages = el("section", "rail-conv");
   const systeme = el("textarea");
   systeme.placeholder = t("chat_systeme_aide");
   systeme.value = ch.conv?.systeme || "";
@@ -2040,10 +2024,8 @@ async function pageChat(id) {
   temp.type = "number"; temp.min = "0"; temp.max = "2"; temp.step = "0.1";
   temp.value = ch.conv?.temperature ?? "";
   temp.placeholder = "0,8";
-  const droite = el("div", "groupe-champs");
-  droite.style.flexDirection = "column";
-  droite.style.alignItems = "stretch";
-  droite.append(champ(t("chat_temperature"), temp), champ(t("contexte"), selectContexte(numCtx, null, async (v) => {
+  const ligneReglages = el("div", "rail-deux");
+  ligneReglages.append(champ(t("chat_temperature"), temp), champ(t("contexte"), selectContexte(numCtx, null, async (v) => {
     if (ch.conv) ch.conv = await json(`/api/conversations/${ch.conv.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ num_ctx: v }) });
     else etat.numCtx = v;
     ch.estimation = null; estimerChat(); majContexte();
@@ -2055,9 +2037,9 @@ async function pageChat(id) {
   };
   systeme.addEventListener("change", enregistrer);
   temp.addEventListener("change", enregistrer);
-  panneauReglages.append(champ(t("chat_systeme"), systeme), droite, choixOutils());
-  if (voixPrete()) { const v = caseVoixAuto(); v.classList.add("voix-chat"); panneauReglages.append(v); }
-  if (ecoutePrete()) { const o = caseOral(); o.classList.add("voix-chat"); panneauReglages.append(o); }
+  panneauReglages.append(el("span", "libelle", t("chat_conversation")), champ(t("chat_systeme"), systeme), ligneReglages, choixOutils());
+  if (voixPrete()) panneauReglages.append(caseVoixAuto());
+  if (ecoutePrete()) panneauReglages.append(caseOral());
 
   const messages = el("div", "messages");
   messages.id = "messages";
@@ -2065,19 +2047,19 @@ async function pageChat(id) {
   col.id = "messages-col";
   messages.append(col);
 
+  // barre de saisie : le texte, puis une rangée d'outils (joindre, modèle, outils | contexte, micro, envoyer)
   const zoneComposer = el("div", "composer-zone");
   const cc = el("div", "composer-col");
-  const ctxLigne = el("div", "contexte-ligne");
-  ctxLigne.id = "contexte-ligne";
   const form = el("form", "composer");
   const champTexte = el("textarea");
   champTexte.rows = 1;
   champTexte.placeholder = t("message_placeholder");
   champTexte.setAttribute("aria-label", t("message_label"));
-  const envoyer = el("button", "bouton principal");
+  const envoyer = el("button", "bouton principal envoyer");
   envoyer.type = "submit";
   envoyer.append(icone("envoyer"));
   envoyer.setAttribute("aria-label", t("envoyer"));
+  envoyer.title = t("entree_aide");
   // images (modèles de vision) : bouton, coller (Ctrl+V) ou glisser-déposer
   const fichier = el("input");
   fichier.type = "file";
@@ -2085,20 +2067,44 @@ async function pageChat(id) {
   fichier.multiple = true;
   fichier.hidden = true;
   fichier.addEventListener("change", () => { ajouterImages(fichier.files); fichier.value = ""; });
-  const joindre = el("button", "bouton petit joindre");
+  const joindre = el("button", "bouton petit icone-seule joindre");
   joindre.type = "button";
   joindre.id = "joindre";
-  joindre.hidden = true;
-  joindre.append(icone("image"));
+  joindre.append(icone("plus"));
   joindre.setAttribute("aria-label", t("img_joindre"));
   joindre.title = t("img_joindre");
-  joindre.addEventListener("click", () => fichier.click());
+  joindre.addEventListener("click", () => { if (ch.vision) fichier.click(); else montrerBanniere(t("img_non_vision", libelleModele(ch.modele || ""))); });
+  // le modèle se choisit dans la barre de saisie, là où l'on écrit
+  const choix = el("select", "choix-modele");
+  choix.setAttribute("aria-label", t("recherche_label"));
+  for (const m of etat.installes) choix.append(new Option(`${libelleModele(m.nom)} · ${m.quantification || ""}`, m.nom));
+  if (ch.modele) choix.value = ch.modele;
+  choix.disabled = !etat.installes.length;
+  choix.addEventListener("change", async () => {
+    ch.modele = choix.value;
+    garder("edgefit.dernier", ch.modele);
+    if (ch.conv) await fetch(`/api/conversations/${ch.conv.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ modele: ch.modele }) });
+    ch.estimation = null;
+    majEtatModele(); rendreMessages(); estimerChat(); majRail(); verifierVision();
+  });
+  const pOutils = el("button", "puce puce-outils");
+  pOutils.type = "button";
+  pOutils.id = "puce-outils";
+  pOutils.addEventListener("click", () => { ouvrirPanneau(true); panneauReglages.querySelector(".choix-outils input")?.focus(); });
+  const anneauCtx = el("span", "anneau-ctx");
+  anneauCtx.id = "anneau-ctx";
   const vignettes = el("div", "vignettes");
   vignettes.id = "vignettes";
-  form.append(joindre, fichier, champTexte, boutonMicro(champTexte, form), envoyer);
+  const gauche = el("div", "co-gauche");
+  gauche.append(joindre, fichier, choix, pOutils);
+  const droite = el("div", "co-droite");
+  droite.append(anneauCtx, boutonMicro(champTexte, form), envoyer);
+  const rangee = el("div", "composer-outils");
+  rangee.append(gauche, droite);
+  form.append(vignettes, champTexte, rangee);
   const alerte = el("div");
   alerte.id = "alerte-contexte";
-  cc.append(alerte, ctxLigne, vignettes, form, el("p", "aide", t("entree_aide")));
+  cc.append(alerte, form);
   champTexte.addEventListener("paste", (e) => {
     const images = [...(e.clipboardData?.files || [])].filter((x) => x.type.startsWith("image/"));
     if (images.length) { e.preventDefault(); ajouterImages(images); }
@@ -2107,13 +2113,18 @@ async function pageChat(id) {
   zoneComposer.addEventListener("dragleave", () => zoneComposer.classList.remove("depot"));
   zoneComposer.addEventListener("drop", (e) => { e.preventDefault(); zoneComposer.classList.remove("depot"); ajouterImages(e.dataTransfer.files); });
   zoneComposer.append(cc);
+
   const tuiles = el("div", "tuiles-chat");
   tuiles.id = "tuiles-chat";
   tuiles.setAttribute("aria-label", t("chat_mesures"));
-  colonne.append(barre, tuiles, panneauReglages, messages, zoneComposer);
+  colonne.append(barre, tuiles, messages, zoneComposer);
 
+  // panneau latéral : réglages de la conversation, puis mesures détaillées
   const rail = el("aside", "rail");
   rail.id = "rail";
+  const railMesures = el("div", "rail-mesures");
+  railMesures.id = "rail-mesures";
+  rail.append(panneauReglages, railMesures);
   zone.classList.toggle("sans-rail", !ch.rail);
   bRail.setAttribute("aria-pressed", String(ch.rail));
   zone.replaceChildren(colonne, rail);
@@ -2121,7 +2132,7 @@ async function pageChat(id) {
   majPuceOutils();
 
   champTexte.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
-  champTexte.addEventListener("input", () => { champTexte.style.height = "auto"; champTexte.style.height = `${Math.min(champTexte.scrollHeight, 160)}px`; });
+  champTexte.addEventListener("input", () => { champTexte.style.height = "auto"; champTexte.style.height = `${Math.min(champTexte.scrollHeight, 200)}px`; });
   form.addEventListener("submit", (e) => { e.preventDefault(); envoyerMessage(champTexte, envoyer, systeme, temp); });
 
   rendreMessages();
@@ -2237,22 +2248,32 @@ function blocReponse(texte, mesures, modele) {
   const zoneOutils = el("div", "outils-zone");
   for (const o of mesures?.outils || []) zoneOutils.append(blocOutil(o, o.resultat));
   b.append(auteur, zoneOutils, tx);
-  if (mesures) b.append(anatomie(mesures));
+  const pied = el("div", "msg-pied");
   const outils = el("div", "msg-outils");
-  const copier = el("button", null, t("copier"));
+  const copier = el("button", "icone-seule");
   copier.type = "button";
+  copier.append(icone("copier"));
+  copier.title = t("copier");
+  copier.setAttribute("aria-label", t("copier"));
   copier.addEventListener("click", async () => {
-    copier.textContent = (await copierTexte(texteBrut(tx))) ? t("copie") : t("copie_impossible");
-    setTimeout(() => { copier.textContent = t("copier"); }, 1500);
+    const ok = await copierTexte(texteBrut(tx));
+    copier.title = ok ? t("copie") : t("copie_impossible");
+    copier.classList.add(ok ? "fait" : "rate");
+    setTimeout(() => { copier.title = t("copier"); copier.classList.remove("fait", "rate"); }, 1500);
   });
   outils.append(copier);
   if (voixPrete()) {
-    const ecouter = el("button", "ecouter", t("voix_ecouter"));
+    const ecouter = el("button", "icone-seule ecouter");
     ecouter.type = "button";
+    ecouter.append(icone("ecouter"));
+    ecouter.title = t("voix_ecouter");
+    ecouter.setAttribute("aria-label", t("voix_ecouter"));
     ecouter.addEventListener("click", () => { if (lecteur.bouton === ecouter) lecteur.arreter(); else lecteur.dire(texteBrut(tx), ecouter); });
     outils.append(ecouter);
   }
-  b.append(outils);
+  pied.append(outils);
+  if (mesures) pied.append(ligneStats(mesures));
+  b.append(pied);
   return b;
 }
 
@@ -2304,6 +2325,22 @@ function majPuceOutils() {
   p.setAttribute("aria-pressed", String(etat.outils.length > 0));
 }
 
+// une seule ligne discrète sous la réponse : vitesse, tokens, premier mot, durée, énergie.
+// Le détail (chargement, lecture du message, énergie) est dans le panneau latéral et au survol.
+function ligneStats(m) {
+  const p = el("p", "stats-ligne");
+  const morceaux = [];
+  if (m.debit_tokens_s) morceaux.push(el("strong", null, `${f(m.debit_tokens_s, 1)} tok/s`));
+  if (m.tokens_generes) morceaux.push(t("st_tokens", f(m.tokens_generes, 0)));
+  if (m.ttft_mesure_s !== undefined) morceaux.push(t("st_premier", f(m.ttft_mesure_s, 2)));
+  if (m.duree_totale_s) morceaux.push(`${f(m.duree_totale_s, 1)} s`);
+  if (m.chargement_s > 0.05) morceaux.push(el("span", "froid-mini", t("st_froid", f(m.chargement_s, 1))));
+  if (m.joules_par_token) morceaux.push(`${f(m.joules_par_token, 2)} J/token`);
+  morceaux.forEach((x, i) => { if (i) p.append(el("span", "sep", "·")); p.append(x); });
+  p.title = T().recu(m, f).map((x) => x.join("")).join("");
+  return p;
+}
+
 // anatomie d'une réponse : chargement | lecture du message | génération, à l'échelle
 function anatomie(m) {
   const bloc = el("div", "anatomie");
@@ -2346,17 +2383,26 @@ function defiler() { const m = $("messages"); if (m) m.scrollTop = m.scrollHeigh
 
 function majContexte() {
   const ch = etat.chat;
-  const z = $("contexte-ligne");
+  const z = $("anneau-ctx");
   if (!z || !ch) return;
   const total = ch.conv?.num_ctx || etat.numCtx;
   const part = Math.min(1, ch.ctxUtilise / total);
-  const barre = el("div", "barre-progres");
-  const s = el("span");
-  s.style.width = `${part * 100}%`;
-  barre.append(s);
-  z.className = `contexte-ligne${part > 0.9 ? " alerte" : ""}`;
-  z.replaceChildren(el("span", null, t("chat_contexte_sat", f(ch.ctxUtilise, 0), f(total, 0))), barre);
-  if (part > 0.9) z.append(el("span", null, t("chat_contexte_plein")));
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 20 20");
+  svg.setAttribute("aria-hidden", "true");
+  const cercle = (classe, longueur) => {
+    const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    c.setAttribute("cx", "10"); c.setAttribute("cy", "10"); c.setAttribute("r", "7.5"); c.setAttribute("class", classe);
+    if (longueur !== undefined) c.setAttribute("stroke-dasharray", `${longueur} 100`);
+    return c;
+  };
+  svg.append(cercle("fond"), cercle("val", Math.max(part * 47.1, part > 0 ? 1.5 : 0)));
+  const texte = t("chat_contexte_sat", f(ch.ctxUtilise, 0), f(total, 0)) + (part > 0.9 ? `. ${t("chat_contexte_plein")}` : "");
+  z.className = `anneau-ctx${part > 0.9 ? " alerte" : ""}`;
+  z.title = texte;
+  z.setAttribute("role", "img");
+  z.setAttribute("aria-label", texte);
+  z.replaceChildren(svg, el("span", null, `${f(part * 100, 0)} %`));
 }
 
 // --- images jointes (modèles de vision) ------------------------------------------------------
@@ -2369,7 +2415,7 @@ async function verifierVision() {
   }
   if (etat.chat !== ch) return;
   const b = $("joindre");
-  if (b) b.hidden = !ch.vision;
+  if (b) { b.classList.toggle("inactif", !ch.vision); b.title = ch.vision ? t("img_joindre") : t("img_non_vision", libelleModele(ch.modele || "")); }
   if (!ch.vision && ch.pieces.length) { ch.pieces = []; rendreVignettes(); }
 }
 // réduite à 1024 px de côté au plus, en JPEG : le modèle la réduirait de toute façon
@@ -2439,7 +2485,7 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
       history.replaceState(null, "", `#/chat?id=${ch.conv.id}`);
     } catch (err) { ch.envoi = false; bEnvoyer.disabled = false; alert(err.message); return; }
   }
-  if (!ch.messages.length) $("messages-col").replaceChildren();
+  if (!ch.messages.length) { $("messages-col").replaceChildren(); const tt = $("chat-titre"); const titre = ch.conv.titre || question.slice(0, 80); if (tt) tt.textContent = titre; $("titre-mobile").textContent = titre; }
   ch.messages.push({ role: "user", content: question, ...(images.length ? { images } : {}) });
   $("messages-col").append(bulleUtilisateur(ch.messages.at(-1)));
   ch.pieces = [];
@@ -2490,7 +2536,7 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
         const m = evt.metriques;
         if (lireAuto && lecteur.jeton === jetonLecture) { lecteur.ajouter(reponse.slice(lu)); lecteur.fermer(); }
         bloc.classList.remove("attente");
-        bloc.insertBefore(anatomie(m), bloc.querySelector(".msg-outils"));
+        bloc.querySelector(".msg-pied").append(ligneStats(m));
         ch.messages.push({ role: "assistant", content: reponse, mesures: m });
         ch.vitesses.push(m.debit_tokens_s || 0);
         ch.derniere = m;
@@ -2566,7 +2612,7 @@ function majVitesseDirect(v) {
 
 function majRail() {
   const ch = etat.chat;
-  const rail = $("rail");
+  const rail = $("rail-mesures");
   if (!rail || !ch) return;
   const m = ch.derniere;
   const blocs = [];
@@ -2913,11 +2959,27 @@ function boutonMicro(champTexte, form) {
   const b = el("button", "bouton petit micro");
   b.type = "button";
   b.id = "micro";
-  b.hidden = !ecoutePrete();
+  b.className = "bouton petit icone-seule micro";
   b.append(icone("micro"));
   b.setAttribute("aria-label", t("mic_parler"));
   b.title = t("mic_parler");
-  b.addEventListener("click", () => micro.basculer(b, champTexte, form));
+  b.addEventListener("click", async () => {
+    if (ecoutePrete()) { micro.basculer(b, champTexte, form); return; }
+    if (!etat.ecoute?.moteur) { montrerBanniere(`${t("mic_sans_moteur")} uv tool install --force --python 3.12 "edgefit[voix,parole] @ git+https://github.com/yassine674/edgefit"`); return; }
+    const base = etat.ecoute.modeles?.base;
+    if (!base || !(await confirmer(t("mic_titre"), t("mic_proposer", base.taille_mo), t("mic_telecharger")))) return;
+    b.classList.add("transcrit");
+    b.title = t("mic_telechargement", base.taille_mo);
+    try {
+      const r = await poster("/api/ecoute/telecharger", { taille: "base" });
+      if (!r.ok) throw new Error(await messageErreur(r));
+      for await (const evt of ndjson(r)) if (evt.type === "erreur") throw new Error(evt.erreur);
+      await chargerEcoute();
+      garder("edgefit.ecoute.taille", "base");
+      micro.basculer(b, champTexte, form);
+    } catch (err) { montrerBanniere(err.message); }
+    finally { b.classList.remove("transcrit"); b.title = t("mic_parler"); }
+  });
   return b;
 }
 function caseOral() {
@@ -3014,7 +3076,8 @@ const lecteur = {
     this.bouton = bouton;
     this.ferme = ferme;
     this.langue = null;
-    if (bouton) bouton.textContent = t("voix_arreter");
+    if (bouton?.classList.contains("icone-seule")) { bouton.classList.add("lit"); bouton.title = t("voix_arreter"); }
+    else if (bouton) bouton.textContent = t("voix_arreter");
     this.boucle(this.jeton);
   },
   ajouter(texte) {
@@ -3028,7 +3091,8 @@ const lecteur = {
     this.jeton += 1;
     this.textes = [];
     if (this.audio) { this.audio.pause(); this.audio = null; }
-    if (this.bouton) this.bouton.textContent = t("voix_ecouter");
+    if (this.bouton?.classList.contains("icone-seule")) { this.bouton.classList.remove("lit"); this.bouton.title = t("voix_ecouter"); }
+    else if (this.bouton) this.bouton.textContent = t("voix_ecouter");
     this.bouton = null;
   },
 
