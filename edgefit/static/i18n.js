@@ -67,7 +67,7 @@ const TEXTES = {
     acces_expire: "Le serveur a redémarré : rouvrez l'adresse affichée dans son terminal.",
     reconnexion: "Reconnexion…",
 
-    m_cpu: "CPU", m_gpu: "GPU", m_ram: "Mémoire", m_temp_cpu: "Température CPU", m_temp_gpu: "Température GPU", m_puissance: "Puissance",
+    m_cpu: "CPU", m_gpu: "GPU", m_ram: "Mémoire", m_temp_cpu: "Température CPU", m_temp_gpu: "Température GPU", m_puissance: "Puissance", tu_temp_cpu: "Temp. CPU", tu_temp_gpu: "Temp. GPU", tu_vitesse: "Vitesse",
     non_dispo: "non disponible",
 
     etape1: "Choisir un modèle",
@@ -278,7 +278,7 @@ const TEXTES = {
     acces_expire: "The server restarted: reopen the address printed in its terminal.",
     reconnexion: "Reconnecting…",
 
-    m_cpu: "CPU", m_gpu: "GPU", m_ram: "Memory", m_temp_cpu: "CPU temperature", m_temp_gpu: "GPU temperature", m_puissance: "Power",
+    m_cpu: "CPU", m_gpu: "GPU", m_ram: "Memory", m_temp_cpu: "CPU temperature", m_temp_gpu: "GPU temperature", m_puissance: "Power", tu_temp_cpu: "CPU temp.", tu_temp_gpu: "GPU temp.", tu_vitesse: "Speed",
     non_dispo: "not available",
 
     etape1: "Choose a model",

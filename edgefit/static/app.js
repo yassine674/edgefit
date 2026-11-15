@@ -515,7 +515,7 @@ function recevoirMetrique(m) {
   }
   majRam();
   if (etat.page === "materiel") rendreMateriel();
-  if (etat.page === "chat") majRailMateriel();
+  if (etat.page === "chat") { majRailMateriel(); majTuilesChat(); }
 }
 function connecter(delai = 1000) {
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/metriques`);
@@ -1978,7 +1978,9 @@ function listeOptimisations(d) {
 async function pageChat(id) {
   const zone = $("page");
   zone.className = "page-chat";
-  const ch = etat.chat = { conv: null, modele: null, messages: [], vitesses: [], derniere: null, estimation: null, ctxUtilise: 0, rail: true, envoi: false,
+  // panneau des détails replié par défaut : l'essentiel est dans les tuiles en haut du chat
+  const ch = etat.chat = { conv: null, modele: null, messages: [], vitesses: [], derniere: null, estimation: null, ctxUtilise: 0,
+    rail: pref("edgefit.rail", "0") === "1", envoi: false,
     pieces: [], vision: false };
   if (id) {
     try {
@@ -2015,7 +2017,8 @@ async function pageChat(id) {
   const bRail = bouton(t("chat_mesures"), "petit", () => {
     const rail = $("rail");
     if (matchMedia("(max-width: 1100px)").matches) rail.classList.toggle("ouvert");
-    else { ch.rail = !ch.rail; zone.classList.toggle("sans-rail", !ch.rail); }
+    else { ch.rail = !ch.rail; zone.classList.toggle("sans-rail", !ch.rail); garder("edgefit.rail", ch.rail ? "1" : "0"); }
+    bRail.setAttribute("aria-pressed", String(ch.rail));
   });
   bRail.textContent = "";
   bRail.className = "bouton petit icone-texte";
@@ -2104,11 +2107,17 @@ async function pageChat(id) {
   zoneComposer.addEventListener("dragleave", () => zoneComposer.classList.remove("depot"));
   zoneComposer.addEventListener("drop", (e) => { e.preventDefault(); zoneComposer.classList.remove("depot"); ajouterImages(e.dataTransfer.files); });
   zoneComposer.append(cc);
-  colonne.append(barre, panneauReglages, messages, zoneComposer);
+  const tuiles = el("div", "tuiles-chat");
+  tuiles.id = "tuiles-chat";
+  tuiles.setAttribute("aria-label", t("chat_mesures"));
+  colonne.append(barre, tuiles, panneauReglages, messages, zoneComposer);
 
   const rail = el("aside", "rail");
   rail.id = "rail";
+  zone.classList.toggle("sans-rail", !ch.rail);
+  bRail.setAttribute("aria-pressed", String(ch.rail));
   zone.replaceChildren(colonne, rail);
+  majTuilesChat();
   majPuceOutils();
 
   champTexte.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
@@ -2509,9 +2518,48 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
 
 function bandeVitesse(v) { return v < 5 ? "lent" : v < 15 ? "lecture" : v < 40 ? "confort" : "instant"; }
 
+// tuiles en haut du chat : la charge de la carte en direct (valeur + courbe des 60 dernières secondes),
+// visibles pendant qu'on discute sans ouvrir le panneau des mesures
+const TUILES_CHAT = [
+  { cle: "gpu_pct", titre: "m_gpu", unite: "%", max: 100, d: 0 },
+  { cle: "cpu_pct", titre: "m_cpu", unite: "%", max: 100, d: 0 },
+  { cle: "temp_gpu_c", repli: "temp_cpu_c", titre: "tu_temp_gpu", titreRepli: "tu_temp_cpu", unite: "°C", max: 100, d: 0 },
+  { cle: "ram_utilisee_go", titre: "m_ram", unite: "go", maxCle: "ram_totale_go", d: 1 },
+  { cle: "puissance_w", titre: "m_puissance", unite: "W", d: 1, siPresent: true },
+];
+function majTuilesChat() {
+  const z = $("tuiles-chat");
+  const m = etat.metrique;
+  const ch = etat.chat;
+  if (!z || !m) return;
+  const tuiles = [];
+  for (const d of TUILES_CHAT) {
+    const cle = m[d.cle] === null || m[d.cle] === undefined ? (d.repli || d.cle) : d.cle;
+    const v = m[cle];
+    if (d.siPresent && (v === null || v === undefined)) continue;
+    const tu = el("div", "tuile");
+    const val = el("span", "val");
+    if (v === null || v === undefined) { val.textContent = "–"; tu.classList.add("absente"); tu.title = t("non_dispo"); }
+    else val.append(f(v, d.d), el("small", null, d.unite === "go" ? ` / ${go(m[d.maxCle], 0)}` : d.unite));
+    tu.append(el("span", "lib", t(cle === d.cle ? d.titre : d.titreRepli)), val, courbe(etat.historique[cle] || [], d.maxCle ? m[d.maxCle] : d.max));
+    tuiles.push(tu);
+  }
+  // vitesse : celle de la réponse en cours (en direct), sinon celle de la dernière réponse
+  const tv = el("div", "tuile vitesse");
+  const vv = el("span", "val");
+  vv.id = "tuile-vitesse";
+  const derniere = ch?.derniere?.debit_tokens_s;
+  vv.append(derniere ? f(derniere, 1) : "–", el("small", null, "tok/s"));
+  tv.append(el("span", "lib", t("tu_vitesse")), vv, courbe(ch?.vitesses || []));
+  tuiles.push(tv);
+  z.replaceChildren(...tuiles);
+}
+
 function majVitesseDirect(v) {
   const n = $("vitesse-direct");
   if (n) n.textContent = f(v, 1);
+  const tv = $("tuile-vitesse");
+  if (tv) tv.firstChild.textContent = f(v, 1);
   const j = $("jauge-vitesse");
   if (j) j.style.width = `${Math.min(100, (v / 40) * 100)}%`;
 }
@@ -2616,6 +2664,7 @@ function majRail() {
   blocs.push(b5);
   rail.replaceChildren(...blocs);
   majRailMateriel();
+  majTuilesChat();
 }
 
 function sousScores(s) {
