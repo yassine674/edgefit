@@ -150,3 +150,31 @@ def test_liste_des_modeles_avec_nom_exact(cas):
     ollama._installes.append({"nom": "qwen:latest", "taille_go": 2.1, "famille": "qwen2", "parametres": "4B", "quantification": "Q4_0"})
     noms = {m["nom"]: m["nom_exact"] for m in c.get("/api/modeles").json()}
     assert noms["qwen:latest"] == "qwen:4b-chat-v1.5-q4_0" and noms["qwen2.5:0.5b"] is None
+
+
+def test_creation_garde_l_identite_et_la_recette(cas):
+    c, _ = cas
+    from edgefit import stockage
+    stockage.supprimer_profil("llama3.2:3b")  # la base de test est commune : un autre test a pu créer ce nom
+    avatar = "data:image/webp;base64,UklGRg=="
+    r = c.post("/api/modeles/creer", json={"nom": "atlas", "base": "llama3.2:3b", "parametres": {"num_ctx": 2048, "num_keep": 256},
+                                           "avatar": avatar, "couleur": "#c6f24e", "description": "Tuteur de maths", "type_kv": "q8_0"})
+    assert lignes(r)[-1]["type"] == "fin"
+    m = next(x for x in c.get("/api/modeles").json() if x["nom"].startswith("atlas"))
+    assert m["profil"]["avatar"] == avatar and m["profil"]["description"] == "Tuteur de maths" and m["profil"]["base"] == "llama3.2:3b"
+    assert m["profil"]["recette"]["parametres"] == {"num_ctx": 2048, "num_keep": 256} and m["profil"]["recette"]["type_kv"] == "q8_0"
+    # un modèle sans profil n'en invente pas ; un avatar qui n'est pas une image « data: » est refusé
+    assert next(x for x in c.get("/api/modeles").json() if x["nom"] == "llama3.2:3b")["profil"] is None
+    assert c.post("/api/modeles/profil", json={"nom": "llama3.2:3b", "avatar": "https://exemple.org/a.png"}).status_code == 422
+    assert c.post("/api/modeles/profil", json={"nom": "llama3.2:3b", "avatar": avatar, "description": "Le généraliste"}).status_code == 200
+    assert c.post("/api/modeles/profil", json={"nom": "absent:1b"}).status_code == 404
+    # supprimer le modèle supprime son profil
+    assert c.post("/api/modeles/supprimer", json={"nom": m["nom"]}).status_code == 200
+    assert m["nom"] not in stockage.lire_profils()
+
+
+def test_atelier_donne_les_coeurs_et_accepte_num_keep(cas):
+    c, _ = cas
+    e = c.post("/api/atelier", json={"modele": "llama3.2:3b"}).json()
+    assert 1 <= e["coeurs"]["physiques"] <= e["coeurs"]["logiques"]
+    assert atelier.valider_parametres({"num_keep": "512"}) == {"num_keep": 512}

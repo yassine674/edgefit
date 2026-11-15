@@ -16,6 +16,9 @@ from .compatibilite import (
 # paramètres qu'un modèle Ollama peut garder (Modelfile PARAMETER) : nom -> (type, min, max)
 PARAMETRES = {
     "num_ctx": (int, 256, 1_048_576),
+    # fenêtre glissante : quand le contexte est plein, Ollama garde les num_keep premiers tokens
+    # (instructions, début de la conversation) et jette la moitié la plus ancienne du reste
+    "num_keep": (int, 0, 1_048_576),
     "num_gpu": (int, 0, 999),          # couches envoyées au GPU ; le reste tourne sur le processeur
     "num_thread": (int, 1, 256),
     "num_batch": (int, 8, 2048),
@@ -56,6 +59,14 @@ def valider_parametres(parametres):
 def _option(total, reference, b, **champs):
     return {**champs, "total_go": octets_vers_go(total), "gain_go": octets_vers_go(reference - total),
             "verdict": _verdict(total, b), "reste_go": octets_vers_go(b["utilisable"] - total)}
+
+
+def coeurs():
+    """Cœurs physiques et fils logiques du processeur (pour le réglage num_thread)."""
+    import os
+    import psutil
+    logiques = os.cpu_count() or 1
+    return {"physiques": psutil.cpu_count(logical=False) or logiques, "logiques": logiques}
 
 
 def etudier(nom, arch, poids_octets, format_actuel, b, num_ctx, type_kv, bande_passante=None, rendement=0.6,
@@ -102,5 +113,6 @@ def etudier(nom, arch, poids_octets, format_actuel, b, num_ctx, type_kv, bande_p
         "plafond_tokens_s": plafond, "vitesse_attendue": plafond * rendement if plafond else None, "rendement": rendement,
         "memoire_unifiee": type_carte in ("jetson", "raspberry"),
         "quantifiable": (format_actuel or "").upper() in ("F16", "F32"),
+        "coeurs": coeurs(),
         "categories": {"poids": poids, "cache_kv": cache, "contexte": contextes, "materiel": plateformes},
     }

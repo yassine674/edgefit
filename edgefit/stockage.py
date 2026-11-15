@@ -54,6 +54,16 @@ CREATE TABLE IF NOT EXISTS bancs (
     mesures_json TEXT NOT NULL,
     cree REAL NOT NULL
 );
+-- identité d'un modèle : avatar, description, et la recette d'optimisation d'un modèle créé dans l'atelier
+CREATE TABLE IF NOT EXISTS profils (
+    nom TEXT PRIMARY KEY,
+    avatar TEXT,
+    couleur TEXT,
+    description TEXT NOT NULL DEFAULT '',
+    base TEXT,
+    recette_json TEXT,
+    modifie REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS endurances (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     modele TEXT NOT NULL,
@@ -177,6 +187,29 @@ def lister_endurances(limite=50):
         return [{"id": r["id"], "modele": r["modele"], "duree_s": r["duree_s"], "num_ctx": r["num_ctx"], "cree": r["cree"],
                  "resume": json.loads(r["resume_json"]), "points": json.loads(r["points_json"])}
                 for r in c.execute("SELECT * FROM endurances ORDER BY cree DESC LIMIT ?", (limite,))]
+
+
+# --- profils : l'identité des modèles (avatar, description, recette de l'atelier) -------------
+
+def ecrire_profil(nom, avatar=None, couleur=None, description="", base=None, recette=None):
+    with connexion() as c:
+        c.execute("INSERT INTO profils (nom, avatar, couleur, description, base, recette_json, modifie) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                  "ON CONFLICT(nom) DO UPDATE SET avatar=excluded.avatar, couleur=excluded.couleur, description=excluded.description, "
+                  "base=COALESCE(excluded.base, profils.base), recette_json=COALESCE(excluded.recette_json, profils.recette_json), "
+                  "modifie=excluded.modifie",
+                  (nom, avatar, couleur, description, base, json.dumps(recette, ensure_ascii=False) if recette is not None else None, time.time()))
+
+
+def lire_profils():
+    with connexion() as c:
+        return {r["nom"]: {"avatar": r["avatar"], "couleur": r["couleur"], "description": r["description"], "base": r["base"],
+                           "recette": json.loads(r["recette_json"]) if r["recette_json"] else None}
+                for r in c.execute("SELECT * FROM profils")}
+
+
+def supprimer_profil(nom):
+    with connexion() as c:
+        c.execute("DELETE FROM profils WHERE nom = ?", (nom,))
 
 
 def tout_effacer(table):

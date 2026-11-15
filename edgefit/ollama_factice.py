@@ -101,6 +101,13 @@ class OllamaFactice:
         if self._charge and self._charge[0] == nom:
             self._charge = None
 
+    async def charger(self, nom, num_ctx=None, garder=None):
+        if all(m["nom"] != nom for m in self._installes):
+            raise ModeleInconnu(f"model '{nom}' not found")
+        if self._pause:
+            await asyncio.sleep(0.5)
+        self._charge = (nom, num_ctx or 4096)
+
     async def supprimer(self, nom):
         if all(m["nom"] != nom for m in self._installes):
             raise ModeleInconnu(f"model '{nom}' not found")

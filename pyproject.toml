@@ -32,4 +32,4 @@ build-backend = "setuptools.build_meta"
 include = ["edgefit*"]
 
 [tool.setuptools.package-data]
-"edgefit" = ["static/*", "donnees/*.json"]
+"edgefit" = ["static/*", "static/polices/*", "donnees/*.json"]

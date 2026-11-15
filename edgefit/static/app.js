@@ -24,6 +24,9 @@ const etat = {
   voix: null,
   voixAuto: pref("edgefit.voix.auto", "0") === "1",
   oral: pref("edgefit.oral", "0") === "1",
+  // mémoire : un seul modèle chargé à la fois, et durée avant qu'Ollama ne libère un modèle inutilisé
+  unSeul: pref("edgefit.unseul", "1") === "1",
+  garderCharge: ["1m", "5m", "30m"].includes(pref("edgefit.garder", "5m")) ? pref("edgefit.garder", "5m") : "5m",
   ollama: { disponible: null },
   installes: [],
   charges: [],
@@ -1031,10 +1034,6 @@ async function pageAccueil() {
 // Chaque catégorie est un panneau qui s'ouvre sur de vraies options. Un clic relance le calcul :
 // la colonne de droite montre la mémoire, le verdict et la vitesse du réglage en cours.
 
-const PARAMS_ATELIER = {
-  vitesse: [["num_thread", 1, 256, 1], ["num_batch", 8, 2048, 8]],
-  generation: [["temperature", 0, 2, 0.05], ["top_p", 0, 1, 0.05], ["top_k", 1, 1000, 1], ["repeat_penalty", 0, 2, 0.05], ["num_predict", -1, 32768, 1], ["seed", 0, 2147483647, 1]],
-};
 function pastilleVerdict(v) { return pastille(v === "trop_gros" ? "non" : v === "ok" ? "ok" : "juste"); }
 
 async function pageAtelier(nomDemande) {
@@ -1042,7 +1041,7 @@ async function pageAtelier(nomDemande) {
   zone.className = "page atelier";
   await chargerOllama();
   const A = etat.atelier = (etat.atelier && (!nomDemande || etat.atelier.origine === nomDemande)) ? etat.atelier
-    : { origine: nomDemande || null, base: nomDemande || null, ctx: etat.numCtx, kv: etat.typeKv, params: {}, systeme: "", nom: "", quantifier: null, ouverts: new Set(["poids"]) };
+    : { origine: nomDemande || null, base: nomDemande || null, ctx: etat.numCtx, kv: etat.typeKv, params: {}, systeme: "", role: null, nom: "", description: "", avatar: null, couleur: null, quantifier: null, ouverts: new Set(["poids"]) };
   const tete = titrePage(t("at_titre"), t("at_sous"));
 
   // choix du modèle de départ
@@ -1053,7 +1052,7 @@ async function pageAtelier(nomDemande) {
       const liste = el("div", "accueil-installes");
       for (const m of etat.installes) {
         const b = bouton("", "acc-installe", () => { location.hash = `#/atelier?nom=${encodeURIComponent(m.nom)}`; });
-        b.append(el("span", "mono", libelleModele(m.nom)), el("span", "aide", [m.parametres, m.quantification].filter(Boolean).join(" · ")));
+        b.append(avatarModele(m.nom), el("span", "mono", libelleModele(m.nom)), el("span", "aide", [m.parametres, m.quantification].filter(Boolean).join(" · ")));
         liste.append(b);
       }
       p.append(el("p", "aide", t("at_depart_installe")), liste);
@@ -1108,15 +1107,16 @@ async function pageAtelier(nomDemande) {
     b.addEventListener("click", action);
     return b;
   };
-  const categorie = (cle, valeur, contenu) => {
-    const d = el("details", "at-cat");
+  const categorie = (cle, valeur, contenu, applique) => {
+    const d = el("details", `at-cat${applique ? " applique" : ""}`);
     d.open = A.ouverts.has(cle);
     d.addEventListener("toggle", () => { if (d.open) A.ouverts.add(cle); else A.ouverts.delete(cle); });
     const s2 = el("summary");
     const [titre, aide] = T().at_cats[cle];
     const g = el("span", "at-cat-titre");
     g.append(el("strong", null, titre), el("span", "aide", aide));
-    s2.append(g, el("span", "at-cat-valeur", valeur));
+    s2.append(g);
+    if (valeur) s2.append(el("span", "at-cat-valeur", valeur));
     const c = el("div", "at-cat-corps");
     c.append(...contenu);
     d.append(s2, c);
@@ -1146,14 +1146,111 @@ async function pageAtelier(nomDemande) {
     return c;
   };
 
+  // puces à choix unique : un clic applique la valeur, « auto » (undefined) retire le réglage
+  const puces = (cle, choix, apres) => {
+    const g = el("div", "at-puces");
+    g.setAttribute("role", "group");
+    for (const [valeur, texte] of choix) {
+      const actif = A.params[cle] === valeur;
+      const b = el("button", `at-puce${actif ? " choisi" : ""}`, texte);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(actif));
+      b.addEventListener("click", () => { if (valeur === undefined) delete A.params[cle]; else A.params[cle] = valeur; (apres || dessiner)(); });
+      g.append(b);
+    }
+    return g;
+  };
+  const effet = (texte, classe) => el("p", `at-effet${classe ? ` ${classe}` : ""}`, texte);
+  const section = (titre, sous, contenu) => {
+    const s = el("section", "at-section");
+    const h = el("header", "at-section-tete");
+    h.append(el("h2", null, titre), el("span", "aide", sous));
+    s.append(h, ...contenu);
+    return s;
+  };
+
+  // --- 1. identité : ce qui fait de ce modèle le vôtre ---
+  function blocIdentite() {
+    const p = el("div", "at-identite panneau");
+    const apercu = el("button", "at-avatar-choix");
+    apercu.type = "button";
+    apercu.title = t("at_avatar_choisir");
+    const fichier = el("input");
+    fichier.type = "file"; fichier.accept = "image/*"; fichier.hidden = true;
+    const majAvatar = () => { apercu.replaceChildren(avatarModele(A.nom || A.origine, { avatar: A.avatar, couleur: A.couleur }, "grand")); majCarte(); };
+    apercu.addEventListener("click", () => fichier.click());
+    fichier.addEventListener("change", async () => {
+      if (!fichier.files[0]) return;
+      try { A.avatar = await imageAvatar(fichier.files[0]); } catch { montrerBanniere(t("img_illisible", fichier.files[0].name)); }
+      dessiner();
+    });
+    const couleurs = el("div", "at-couleurs");
+    couleurs.setAttribute("role", "group");
+    couleurs.setAttribute("aria-label", t("at_couleur"));
+    for (const c of COULEURS_AVATAR) {
+      const b = el("button", `at-couleur${A.couleur === c ? " choisi" : ""}`);
+      b.type = "button"; b.style.background = c; b.setAttribute("aria-label", c); b.setAttribute("aria-pressed", String(A.couleur === c));
+      b.addEventListener("click", () => { A.couleur = c; A.avatar = null; dessiner(); });
+      couleurs.append(b);
+    }
+    const actionsAvatar = el("div", "at-avatar-actions");
+    actionsAvatar.append(bouton(t("at_avatar_choisir"), "petit", () => fichier.click()), couleurs);
+    if (A.avatar) actionsAvatar.append(bouton(t("at_avatar_retirer"), "petit", () => { A.avatar = null; dessiner(); }));
+    const nom = el("input");
+    nom.type = "text"; nom.value = A.nom; nom.placeholder = t("at_nom_exemple"); nom.maxLength = 60; nom.autocomplete = "off"; nom.spellcheck = false;
+    nom.addEventListener("input", () => { A.nom = nomPropre(nom.value); if (!A.avatar) apercu.replaceChildren(avatarModele(A.nom || A.origine, { couleur: A.couleur }, "grand")); majCarte(); });
+    nom.addEventListener("change", () => { nom.value = A.nom; });
+    const desc = el("input");
+    desc.type = "text"; desc.value = A.description; desc.placeholder = t("at_desc_exemple"); desc.maxLength = 300;
+    desc.addEventListener("input", () => { A.description = desc.value; majCarte(); });
+    const haut = el("div", "at-identite-haut");
+    const champs = el("div", "at-identite-champs");
+    champs.append(champ(t("at_nom"), nom), champ(t("at_desc"), desc));
+    const gaucheA = el("div", "at-avatar-zone");
+    gaucheA.append(apercu, fichier);
+    haut.append(gaucheA, champs);
+    majAvatar();
+
+    // rôle : des instructions gardées dans le modèle, à partir d'un rôle prêt ou écrites à la main
+    const sys = el("textarea");
+    sys.rows = 3; sys.placeholder = t("chat_systeme_aide"); sys.value = A.systeme;
+    sys.setAttribute("aria-label", t("at_role"));
+    sys.addEventListener("input", () => { A.systeme = sys.value; A.role = null; majCarte(); });
+    const roles = el("div", "at-puces");
+    for (const [cle, [titre, texte]] of Object.entries(T().at_roles)) {
+      const b = el("button", `at-puce${A.role === cle ? " choisi" : ""}`, titre);
+      b.type = "button";
+      b.addEventListener("click", () => { A.role = cle; A.systeme = texte; dessiner(); });
+      roles.append(b);
+    }
+    // style : la façon d'écrire (échantillonnage). Ce n'est pas une optimisation, c'est du caractère.
+    const styles = el("div", "at-puces");
+    const styleActuel = Object.entries(STYLES_ATELIER).find(([, v]) => v.temperature === A.params.temperature && v.top_p === A.params.top_p)?.[0];
+    for (const [cle, v] of Object.entries(STYLES_ATELIER)) {
+      const b = el("button", `at-puce${styleActuel === cle ? " choisi" : ""}`, T().at_styles[cle]);
+      b.type = "button";
+      b.addEventListener("click", () => { for (const k of ["temperature", "top_p"]) { if (v[k] === undefined) delete A.params[k]; else A.params[k] = v[k]; } dessiner(); });
+      styles.append(b);
+    }
+    const fins = el("details", "at-fins");
+    fins.open = A.ouverts.has("fins");
+    fins.addEventListener("toggle", () => { if (fins.open) A.ouverts.add("fins"); else A.ouverts.delete("fins"); });
+    const grille = el("div", "at-grille");
+    grille.append(...PARAMS_STYLE.map((x) => champNombre(...x)));
+    fins.append(el("summary", null, t("at_fins")), grille);
+    p.append(haut, actionsAvatar, champ(t("at_role"), roles), sys, champ(t("at_style"), styles), fins);
+    return p;
+  }
+
   function dessiner() {
     const C = etude.categories;
     const cats = [];
-    // 1. poids
+    const ctx = A.ctx;
+    // 1. quantification des poids
     const poids = C.poids.map((o) => ligneOption(o, o.format, `${f(o.bits, 1)} bits/poids · ${t("at_fichier", go(o.fichier_go, 2))}${o.exact ? "" : ` · ${t("at_estime")}`}${o.plafond_tokens_s ? ` · ≤ ${f(o.plafond_tokens_s * etude.rendement, 0)} tok/s` : ""}`,
       () => { if (!o.choisi && o.nom) relancer(o.nom); }));
     C.poids.forEach((o, k) => { if (!o.nom && !o.choisi) { poids[k].disabled = true; poids[k].title = t("at_non_publie"); poids[k].querySelector(".at-opt-g .aide").append(` · ${t("at_non_publie")}`); } });
-    const blocPoids = [el("p", "aide", t("at_poids_aide")), ...poids];
+    const blocPoids = [...poids];
     if (A.erreur) blocPoids.push(el("p", "erreur-bloc", t("at_variante_absente", A.erreur)));
     if (etude.quantifiable) {
       const sel = el("select");
@@ -1164,60 +1261,61 @@ async function pageAtelier(nomDemande) {
       c.append(el("span", "aide", t("at_quant_aide")));
       blocPoids.push(c);
     }
-    cats.push(categorie("poids", etude.format || "–", blocPoids));
-    // 2. cache KV
-    const kvs = C.cache_kv.map((o) => ligneOption(o, o.valeur, t("at_kv_detail", go(o.kv_go, 2), T().at_kv_qualite[o.valeur]),
-      () => { A.kv = o.valeur; relancer(); }));
-    const blocKv = [el("p", "aide", t("at_kv_aide")), ...kvs];
-    if (A.kv !== "f16") blocKv.push(el("p", "aide", t("at_kv_serveur")), blocCommande(commandeKv(A.kv)));
-    cats.push(categorie("cache_kv", A.kv, blocKv));
-    // 3. contexte
-    cats.push(categorie("contexte", t("contexte_option", A.ctx), [el("p", "aide", t("at_ctx_aide")),
-      ...C.contexte.map((o) => ligneOption(o, t("contexte_option", o.valeur), t("at_kv_detail", go(o.kv_go, 2), ""), () => { A.ctx = o.valeur; relancer(); }))]));
-    // 4. GPU / CPU
+    cats.push(categorie("poids", etude.format || "–", blocPoids, A.base !== A.origine || !!A.quantifier));
+    // 2. quantification du cache KV (réglage du serveur) + attention flash, qu'elle exige
+    const kvs = C.cache_kv.map((o) => ligneOption(o, o.valeur, t("at_kv_detail", go(o.kv_go, 2), T().at_kv_qualite[o.valeur]), () => { A.kv = o.valeur; relancer(); }));
+    const blocKv = [...kvs];
+    if (A.kv !== "f16") blocKv.push(effet(t("at_kv_serveur"), "note"), pliKv(A.kv));
+    cats.push(categorie("cache_kv", A.kv, blocKv, A.kv !== "f16"));
+    // 3. fenêtre de contexte
+    cats.push(categorie("contexte", t("contexte_option", ctx),
+      C.contexte.map((o) => ligneOption(o, t("contexte_option", o.valeur), t("at_ctx_detail", go(o.kv_go, 2), Math.round(o.valeur * 0.75 / 100) * 100), () => { A.ctx = o.valeur; if ((A.params.num_keep ?? 0) >= o.valeur) delete A.params.num_keep; relancer(); })),
+      ctx !== 4096));
+    // 4. fenêtre glissante : ce qui reste quand le contexte est plein
+    const garde = A.params.num_keep;
+    const choixGarde = [[undefined, t("at_auto")], ...[128, 256, 512, 1024, 2048].filter((n) => n <= ctx / 2).map((n) => [n, `${n} tokens`])];
+    cats.push(categorie("glissante", garde === undefined ? t("at_auto") : `${garde} tokens`,
+      [puces("num_keep", choixGarde), effet(garde === undefined ? t("at_glisse_auto", ctx) : t("at_glisse_effet", ctx, garde, Math.round((ctx - garde) / 2)))], garde !== undefined));
+    // 5. déport sur le GPU
     if (!etude.gpu_detecte) {
       delete A.params.num_gpu;  // sans GPU utilisable, Ollama ignore ce réglage
-      cats.push(categorie("gpu", t("at_gpu_aucun_court"), [el("p", "aide", t("at_gpu_aucun"))]));
+      cats.push(categorie("gpu", t("at_gpu_aucun_court"), [effet(t("at_gpu_aucun"), "note")], false));
+    } else {
+      const glisse = el("input");
+      glisse.type = "range"; glisse.min = 0; glisse.max = etude.couches || 99; glisse.step = 1;
+      glisse.value = A.params.num_gpu ?? glisse.max;
+      glisse.setAttribute("aria-label", T().at_cats.gpu[0]);
+      const lecture = effet("");
+      const poidsGo = etude.estimation_go.poids;
+      const majCouches = () => {
+        const k = A.params.num_gpu;
+        lecture.textContent = k === undefined ? t("at_gpu_tout", etude.couches)
+          : t("at_gpu_part", k, etude.couches, go(poidsGo * k / etude.couches, 2), go(poidsGo * (etude.couches - k) / etude.couches, 2));
+      };
+      glisse.addEventListener("input", () => { if (Number(glisse.value) >= Number(glisse.max)) delete A.params.num_gpu; else A.params.num_gpu = Number(glisse.value); majCouches(); dessinerResume(); });
+      glisse.addEventListener("change", dessiner);
+      majCouches();
+      cats.push(categorie("gpu", A.params.num_gpu === undefined ? t("at_auto") : `${A.params.num_gpu} / ${etude.couches}`,
+        [glisse, lecture, effet(t(etude.memoire_unifiee ? "at_gpu_aide_unifiee" : "at_gpu_aide"), "note")], A.params.num_gpu !== undefined));
     }
-    const glisse = el("input");
-    glisse.type = "range"; glisse.min = 0; glisse.max = etude.couches || 99; glisse.step = 1;
-    glisse.value = A.params.num_gpu ?? glisse.max;
-    const lecture = el("p", "at-couches");
-    const majCouches = () => { lecture.textContent = A.params.num_gpu === undefined ? t("at_gpu_tout", etude.couches) : t("at_gpu_part", A.params.num_gpu, etude.couches); };
-    glisse.setAttribute("aria-label", T().at_cats.gpu[0]);
-    glisse.addEventListener("input", () => { if (Number(glisse.value) >= Number(glisse.max)) delete A.params.num_gpu; else A.params.num_gpu = Number(glisse.value); majCouches(); dessinerResume(); });
-    majCouches();
-    if (etude.gpu_detecte) cats.push(categorie("gpu", A.params.num_gpu === undefined ? t("at_gpu_defaut") : `${A.params.num_gpu} / ${etude.couches}`,
-      [el("p", "aide", t(etude.memoire_unifiee ? "at_gpu_aide_unifiee" : "at_gpu_aide")), glisse, lecture]));
-    // 5. vitesse, 6. génération
-    for (const cle of ["vitesse", "generation"]) {
-      const n = PARAMS_ATELIER[cle].filter(([k]) => A.params[k] !== undefined).length;
-      const grille = el("div", "at-grille");
-      grille.append(...PARAMS_ATELIER[cle].map((x) => champNombre(...x)));
-      cats.push(categorie(cle, n ? t("at_n_reglages", n) : t("at_defaut"), [grille]));
-    }
-    // 7. instructions
-    const sys = el("textarea");
-    sys.rows = 4;
-    sys.placeholder = t("chat_systeme_aide");
-    sys.value = A.systeme;
-    sys.setAttribute("aria-label", T().at_cats.instructions[0]);
-    sys.addEventListener("input", () => { A.systeme = sys.value; dessinerResume(); });
-    cats.push(categorie("instructions", A.systeme.trim() ? t("at_ecrites") : t("at_aucune"), [el("p", "aide", t("at_sys_aide")), sys]));
-    // 8. mémoire de la carte
-    const mem = [el("p", "aide", t("at_mem_aide", go(etude.budget_go.utilisable, 2), go(etude.budget_go.disponible, 2)))];
-    for (const c of etude.charges) {
-      const l = el("div", "acc-installe");
-      l.append(el("span", "mono", c.nom), el("span", "aide", go(c.taille_go, 2)), bouton(t("mm_decharger"), "petit", async () => {
-        const r = await poster("/api/modeles/decharger", { nom: c.nom });
-        if (!r.ok) alert(await messageErreur(r));
-        relancer();
-      }));
-      mem.push(l);
-    }
-    if (!etude.charges.length) mem.push(el("p", "aide", t("at_mem_rien")));
-    cats.push(categorie("memoire", etude.charges.length ? t("at_mem_charges", etude.charges.length) : t("at_mem_libre"), mem));
-    // 9. autre matériel
+    // 6. fils de calcul
+    const co = etude.coeurs;
+    const choixFils = [[undefined, t("at_auto")], ...[...new Set([Math.max(1, Math.floor(co.physiques / 2)), co.physiques, co.logiques])].map((n) =>
+      [n, n === co.physiques ? t("at_fils_physiques", n) : n === co.logiques ? t("at_fils_logiques", n) : t("at_fils_n", n)])];
+    cats.push(categorie("fils", A.params.num_thread === undefined ? t("at_auto") : String(A.params.num_thread),
+      [puces("num_thread", choixFils), effet(t("at_fils_effet", co.physiques, co.logiques)), effet(t("at_a_mesurer"), "note")], A.params.num_thread !== undefined));
+    // 7. taille des lots de lecture
+    cats.push(categorie("lots", A.params.num_batch === undefined ? t("at_auto") : String(A.params.num_batch),
+      [puces("num_batch", [[undefined, t("at_lots_defaut")], [128, "128"], [256, "256"], [1024, "1024"]]), effet(t("at_lots_effet")), effet(t("at_a_mesurer"), "note")], A.params.num_batch !== undefined));
+    // 8. réponse bornée : durée et énergie maximales d'une réponse
+    const borne = A.params.num_predict;
+    const v = etude.vitesse_attendue;
+    cats.push(categorie("reponse", borne === undefined ? t("at_sans_limite") : `${borne} tokens`,
+      [puces("num_predict", [[undefined, t("at_sans_limite")], ...[128, 256, 512, 1024].map((n) => [n, `${n} tokens`])]),
+        effet(borne === undefined ? t("at_borne_sans") : v ? t("at_borne_effet", borne, Math.round(borne * 0.75 / 10) * 10, f(borne / v, 0)) : t("at_borne_effet_court", borne, Math.round(borne * 0.75 / 10) * 10))],
+      borne !== undefined));
+    const nb = cats.filter((c) => c.classList.contains("applique")).length;
+    // autre matériel
     const mats = C.materiel.map((p) => {
       const l = el("div", `at-plateforme${p.compatible ? "" : " non"}`);
       const g = el("span", "at-opt-g");
@@ -1229,8 +1327,10 @@ async function pageAtelier(nomDemande) {
       l.append(g, d);
       return l;
     });
-    cats.push(categorie("materiel", t("at_mat_n", C.materiel.filter((p) => p.compatible).length, C.materiel.length), [el("p", "aide", t("at_mat_aide")), ...mats]));
-    gauche.replaceChildren(...cats);
+    gauche.replaceChildren(
+      section(t("at_s_identite"), t("at_s_identite_sous"), [blocIdentite()]),
+      section(t("at_s_optis"), t("at_s_optis_n", nb), cats),
+      section(t("at_s_ailleurs"), t("at_mat_n", C.materiel.filter((p) => p.compatible).length, C.materiel.length), [categorie("materiel", "", mats, false)]));
     dessinerResume();
   }
 
@@ -1241,8 +1341,15 @@ async function pageAtelier(nomDemande) {
     if (A.kv !== "f16") r.push([t("at_r_kv", A.kv), () => { A.kv = "f16"; relancer(); }]);
     r.push([t("at_r_ctx", ctxCourt(A.ctx)), null]);
     for (const [k, v] of Object.entries(A.params)) r.push([`${T().at_params[k]?.[0] || k} : ${k === "num_gpu" ? `${v} / ${etude.couches}` : v}`, () => { delete A.params[k]; dessiner(); }]);
-    if (A.systeme.trim()) r.push([t("at_r_sys"), () => { A.systeme = ""; dessiner(); }]);
+    if (A.systeme.trim()) r.push([A.role ? T().at_roles[A.role][0] : t("at_r_sys"), () => { A.systeme = ""; A.role = null; dessiner(); }]);
     return r;
+  }
+  // carte d'identité du modèle, en haut de la colonne de droite (mise à jour à chaque frappe)
+  const carte = el("div", "at-carte");
+  function majCarte() {
+    const txt = el("div", "at-carte-texte");
+    txt.append(el("strong", "mono", A.nom || t("at_sans_nom")), el("span", "aide", A.description.trim() || t("at_base_sur", libelleModele(A.origine))));
+    carte.replaceChildren(avatarModele(A.nom || A.origine, { avatar: A.avatar, couleur: A.couleur }, "grand"), txt);
   }
   function dessinerResume() {
     const e = etude.estimation_go, u = etude.budget_go.utilisable;
@@ -1253,35 +1360,47 @@ async function pageAtelier(nomDemande) {
     const lim = el("i", "limite");
     lim.style.left = `${(u / echelle) * 100}%`;
     barre.append(lim);
-    const tete2 = el("div", "at-resume-tete");
-    tete2.append(el("span", "mono", libelleModele(A.base)), pastilleVerdict(etude.verdict));
-    const dl = el("dl", "lignes-mesure");
-    const li = (k, v) => dl.append(el("dt", null, k), el("dd", null, v));
-    li(t("at_l_poids"), go(e.poids, 2));
-    li(t("at_l_kv", ctxCourt(A.ctx), A.kv), go(e.cache_kv, 2));
-    li(t("at_l_buffers"), go(e.buffers, 2));
-    li(t("at_l_total"), `${go(e.total, 2)} / ${go(u, 2)}`);
-    li(etude.reste_go >= 0 ? t("at_l_reste") : t("at_l_manque"), go(Math.abs(etude.reste_go), 2));
-    if (etude.vitesse_attendue) li(t("at_l_vitesse"), `≈ ${f(etude.vitesse_attendue, 0)} tok/s`);
+    majCarte();
+    const verdict = el("div", "at-resume-tete");
+    verdict.append(el("span", "at-total", `${go(e.total, 2)}`), el("span", "aide", t("at_sur", go(u, 2))), pastilleVerdict(etude.verdict));
+    // la base (réglage d'origine, contexte 4K, cache F16) face à votre modèle : la différence, chiffrée
+    const table = el("table", "at-diff");
+    const tr0 = el("tr");
+    tr0.append(el("th", null, ""), el("th", null, t("at_d_base")), el("th", null, t("at_d_votre")));
+    table.append(tr0);
+    const B = A.reference;
+    const ligne = (lib, base, votre, mieux) => {
+      const tr = el("tr", base !== votre ? `change${mieux ? " mieux" : ""}` : "");
+      tr.append(el("td", null, lib), el("td", null, base), el("td", null, votre));
+      table.append(tr);
+    };
+    if (B) {
+      const eb = B.estimation_go;
+      ligne(t("at_d_poids"), `${B.format || "–"} · ${go(eb.poids, 2)}`, `${(A.quantifier || etude.format || "–").toUpperCase()} · ${go(e.poids, 2)}`, e.poids < eb.poids);
+      ligne(t("at_d_kv"), `F16 · ${go(eb.cache_kv, 2)}`, `${A.kv.toUpperCase()} · ${go(e.cache_kv, 2)}`, e.cache_kv < eb.cache_kv);
+      ligne(t("at_d_ctx"), ctxCourt(B.num_ctx), ctxCourt(A.ctx), false);
+      ligne(t("at_d_total"), go(eb.total, 2), go(e.total, 2), e.total < eb.total);
+      if (etude.vitesse_attendue && B.vitesse_attendue) ligne(t("at_l_vitesse"), `≈ ${f(B.vitesse_attendue, 0)} tok/s`, `≈ ${f(etude.vitesse_attendue, 0)} tok/s`, etude.vitesse_attendue > B.vitesse_attendue);
+      const d = eb.total - e.total;
+      if (Math.abs(d) >= 0.01) table.append(Object.assign(el("caption", d > 0 ? "mieux" : ""), { textContent: t(d > 0 ? "at_d_gain" : "at_d_cout", go(Math.abs(d), 2), f(Math.abs(d) / eb.total * 100, 0)) }));
+    }
     const chips = el("div", "at-recette");
     for (const [texte, retirer] of recette()) {
       const c = el("span", "at-chip", texte);
       if (retirer) { const x = el("button", null, "×"); x.type = "button"; x.setAttribute("aria-label", `${t("img_retirer")} ${texte}`); x.addEventListener("click", retirer); c.append(x); }
       chips.append(c);
     }
-    const nom = el("input");
-    nom.type = "text";
-    nom.value = A.nom || (A.nom = `${A.origine.split("/").pop().replace(/[:]/g, "-").replace(/-latest$/, "")}-perso`);
-    nom.setAttribute("aria-label", t("at_nom"));
-    nom.addEventListener("input", () => { A.nom = nom.value.trim(); });
+    const memesPoids = A.base === A.origine && !A.quantifier;
     const etatCreation = el("p", "aide at-creation");
     etatCreation.setAttribute("aria-live", "polite");
     const creer = bouton(t("at_creer"), "principal", async () => {
+      if (!A.nom) { etatCreation.textContent = t("at_nom_requis"); etatCreation.className = "erreur-bloc at-creation"; gauche.querySelector(".at-identite-champs input")?.focus(); return; }
       creer.disabled = true;
       etatCreation.className = "aide at-creation";
       try {
         const r = await poster("/api/modeles/creer", { nom: A.nom, base: A.base, systeme: A.systeme, quantifier: A.quantifier,
-          parametres: { num_ctx: A.ctx, ...A.params }, remplacer: A.remplacer === A.nom });
+          parametres: { num_ctx: A.ctx, ...A.params }, remplacer: A.remplacer === A.nom, type_kv: A.kv,
+          avatar: A.avatar, couleur: A.couleur, description: A.description });
         if (r.status === 409) { A.remplacer = A.nom; throw new Error(t("at_existe", A.nom)); }
         if (!r.ok) throw new Error(await messageErreur(r));
         for await (const evt of ndjson(r)) {
@@ -1293,6 +1412,11 @@ async function pageAtelier(nomDemande) {
             const mesurer = el("a", "bouton petit", t("mm_mesurer"));
             mesurer.href = `#/bancs?nom=${encodeURIComponent(evt.nom)}`;
             acts.append(bouton(t("a_discuter_court"), "petit principal", () => nouvelleConversationAvec(evt.nom)), mesurer);
+            if (etat.installes.some((m) => m.nom === A.origine)) {
+              const cmp = el("a", "bouton petit", t("at_comparer_base"));
+              cmp.href = `#/comparer?a=${encodeURIComponent(A.origine)}&b=${encodeURIComponent(evt.nom)}`;
+              acts.append(cmp);
+            }
             etatCreation.replaceChildren(el("strong", null, t("at_cree", evt.nom)), acts);
             etatCreation.className = "at-creation fait";
           }
@@ -1302,12 +1426,45 @@ async function pageAtelier(nomDemande) {
     });
     if (etude.verdict === "trop_gros") creer.disabled = true;
     const bas = el("div", "at-fabriquer");
-    bas.append(el("span", "libelle", t("at_nom")), nom, creer,
-      el("p", "aide", etude.verdict === "trop_gros" ? t("at_trop_gros") : etude.source === "registre" ? t("at_a_telecharger", go(etude.telechargement_go, 1)) : t("at_sans_copie")),
+    bas.append(creer,
+      el("p", "aide", etude.verdict === "trop_gros" ? t("at_trop_gros") : etude.source === "registre" ? t("at_a_telecharger", go(etude.telechargement_go, 1)) : t(memesPoids ? "at_sans_copie" : "at_autres_poids")),
       etatCreation);
-    droite.replaceChildren(tete2, barre, dl, el("span", "libelle", t("at_recette")), chips, bas);
+    droite.replaceChildren(carte, verdict, barre, table, el("span", "libelle", t("at_recette")), chips, bas);
   }
+  // la référence : le modèle de départ tel qu'il tourne sans rien changer (contexte 4K, cache F16)
+  try {
+    const r = await poster("/api/atelier", { modele: A.origine, num_ctx: 4096, type_kv: "f16" });
+    A.reference = r.ok ? await r.json() : null;
+  } catch { A.reference = null; }
   await relancer();
+}
+
+// --- identité des modèles : avatar (image choisie ou monogramme coloré), partout où un modèle apparaît ---
+const COULEURS_AVATAR = ["#c6f24e", "#4ee1c1", "#62a8ff", "#b18cff", "#ff8fb1", "#ffb454"];
+const STYLES_ATELIER = { precis: { temperature: 0.2, top_p: 0.8 }, equilibre: {}, creatif: { temperature: 1, top_p: 0.95 } };
+const PARAMS_STYLE = [["temperature", 0, 2, 0.05], ["top_p", 0, 1, 0.05], ["top_k", 1, 1000, 1], ["repeat_penalty", 0, 2, 0.05], ["seed", 0, 2147483647, 1]];
+function nomPropre(v) { return v.trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9._:-]+/g, "-").replace(/^[-.:]+|[-.:]+$/g, "").slice(0, 60); }
+function couleurDe(nom) { let h = 0; for (const c of nom) h = (h * 31 + c.codePointAt(0)) >>> 0; return COULEURS_AVATAR[h % COULEURS_AVATAR.length]; }
+function avatarModele(nom, profil, taille) {
+  const p = profil === undefined ? etat.installes.find((m) => m.nom === nom)?.profil : profil;
+  const a = el("span", `avatar${taille ? ` ${taille}` : ""}`);
+  a.setAttribute("aria-hidden", "true");
+  if (p?.avatar) { const i = el("img"); i.src = p.avatar; i.alt = ""; a.append(i); return a; }
+  const court = (nom || "?").split("/").pop().split(":")[0].replace(/[^a-zA-Z0-9]/g, "");
+  a.textContent = (court.slice(0, 2) || "?").toUpperCase();
+  a.style.setProperty("--av", p?.couleur || couleurDe(nom || "?"));
+  return a;
+}
+// image choisie -> carré de 128 px, recadré au centre : quelques Ko, gardés dans la base d'edgefit
+async function imageAvatar(fichierImage) {
+  const bitmap = await createImageBitmap(fichierImage);
+  const cote = Math.min(bitmap.width, bitmap.height);
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  c.getContext("2d").drawImage(bitmap, (bitmap.width - cote) / 2, (bitmap.height - cote) / 2, cote, cote, 0, 0, 128, 128);
+  bitmap.close?.();
+  const webp = c.toDataURL("image/webp", 0.85);
+  return webp.startsWith("data:image/webp") ? webp : c.toDataURL("image/jpeg", 0.85);
 }
 
 // --- page Pour mon besoin : usage + vitesse voulue -> le modèle à installer --------------------
@@ -1606,7 +1763,7 @@ function blocVerdict(d) {
   lim.style.left = `${(b.utilisable / echelle) * 100}%`;
   barre.append(lim);
   const leg = el("div", "legende");
-  for (const [lib, c] of [["p_poids", "var(--a)"], ["p_kv", "var(--b)"], ["p_buffers", "#5a6070"]]) {
+  for (const [lib, c] of [["p_poids", "var(--a)"], ["p_kv", "var(--b)"], ["p_buffers", "#6b7263"]]) {
     const s = el("span"); const i = el("i"); i.style.background = c; s.append(i, t(lib)); leg.append(s);
   }
   const s = el("span"); const i = el("i"); i.style.cssText = "width:2px;background:var(--t1)"; s.append(i, t("l_limite")); leg.append(s);
@@ -1706,7 +1863,7 @@ function boitePieces(d) {
   };
   ligne("var(--a)", t("p_poids"), go(e.poids, 2));
   ligne("var(--b)", t("p_kv"), go(e.cache_kv, 2));
-  ligne("#5a6070", t("p_buffers"), go(e.buffers, 2));
+  ligne("#6b7263", t("p_buffers"), go(e.buffers, 2));
   ligne(null, t("p_total"), go(e.total, 2), "total");
   ligne(null, t("p_capacite"), go(b.utilisable, 2));
   const r = b.utilisable - e.total;
@@ -2065,7 +2222,7 @@ function rendreMessages() {
 function blocReponse(texte, mesures, modele) {
   const b = el("div", "msg-ia");
   const auteur = el("div", "auteur");
-  auteur.append(el("i"), modele ? libelleModele(modele) : "");
+  auteur.append(modele ? avatarModele(modele) : el("i"), modele ? libelleModele(modele) : "");
   const tx = el("div", "texte md");
   ecrireMarkdown(tx, texte || "");
   const zoneOutils = el("div", "outils-zone");
@@ -2155,7 +2312,7 @@ function anatomie(m) {
   }
   const leg = el("div", "anatomie-legende");
   const item = (couleur, lib, v) => { const s = el("span"); const i = el("i"); i.style.background = couleur; s.append(i, `${lib} ${f(v, 2)} s`); leg.append(s); };
-  if (chargement) item("#5a6070", t("an_chargement"), chargement);
+  if (chargement) item("#6b7263", t("an_chargement"), chargement);
   item("var(--a)", t("an_lecture"), lecture);
   item("var(--b)", t("an_generation"), generation);
   const recu = el("p", "recu");
@@ -2291,7 +2448,7 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
   const jetonLecture = lecteur.jeton;
   try {
     const r = await poster("/api/chat", { modele: ch.modele, conversation_id: ch.conv.id, num_ctx: ch.conv.num_ctx,
-      systeme: ch.conv.systeme || "", temperature: ch.conv.temperature, type_kv: etat.typeKv, outils: etat.outils, messages: ch.messages.map(({ role, content, images: im }) => ({ role, content, ...(im?.length ? { images: im } : {}) })) });
+      systeme: ch.conv.systeme || "", temperature: ch.conv.temperature, type_kv: etat.typeKv, outils: etat.outils, un_seul: etat.unSeul, garder: etat.garderCharge, messages: ch.messages.map(({ role, content, images: im }) => ({ role, content, ...(im?.length ? { images: im } : {}) })) });
     if (!r.ok) throw new Error(await messageErreur(r));
     for await (const evt of ndjson(r)) {
       if (evt.type === "token") {
@@ -2315,6 +2472,9 @@ async function envoyerMessage(champTexte, bEnvoyer, systeme, temp) {
         defiler();
       } else if (evt.type === "outils_indisponibles") {
         bloc.querySelector(".outils-zone").append(el("p", "aide outil-note", t("outils_indisponibles")));
+      } else if (evt.type === "liberes") {
+        // les autres modèles ont été libérés pour faire de la place à celui-ci
+        bloc.querySelector(".outils-zone").append(el("p", "aide outil-note", t("mm_liberes_pour", evt.noms.map(libelleModele).join(", "))));
       } else if (evt.type === "erreur") {
         throw new Error(evt.erreur);
       } else if (evt.type === "fin") {
@@ -2518,6 +2678,18 @@ async function pageModeles() {
     const p = el("p", disque.libre_go < 10 ? "raison bad" : "aide", t("mm_stockage", go(totalModeles, 2), go(disque.libre_go, 1), disque.dossier));
     stock.append(p, barreStockage([["mod", totalModeles], ["sys", Math.max(0, disque.total_go - disque.libre_go - totalModeles)]], disque.total_go));
   }
+  // installé (sur le disque) n'est pas chargé (en mémoire) : c'est ce bandeau qui le dit
+  const enMemoire = etat.charges.reduce((s, c) => s + c.taille_go, 0);
+  const memo = el("div", "bandeau-memoire");
+  const resume = el("p", null);
+  resume.append(el("strong", null, t("mm_resume_installes", etat.installes.length, go(totalModeles, 1))), " · ",
+    el("strong", null, etat.charges.length ? t("mm_resume_memoire", etat.charges.length, go(enMemoire, 1)) : t("mm_resume_rien")));
+  memo.append(resume, el("p", "aide", t("mm_explication", dureeGarder(etat.garderCharge), etat.unSeul)));
+  if (etat.charges.length) memo.append(bouton(t("mm_tout_liberer"), "petit", async () => {
+    for (const c of etat.charges) await poster("/api/modeles/decharger", { nom: c.nom });
+    pageModeles();
+  }));
+  stock.append(memo);
   const table = el("table", "tableau en-cartes");  // sur téléphone, chaque ligne devient une carte
   const tr = el("tr");
   for (const [lib, cl] of [[t("mm_modele")], [t("mm_etat")], [t("mm_vitesse"), "num"], [t("mm_utilise"), "num cache-mobile"], [t("mm_taille"), "num cache-mobile"], [""]]) tr.append(el("th", cl || "", lib));
@@ -2532,7 +2704,28 @@ async function pageModeles() {
     const ligne = el("tr");
     const nom = el("td");
     nom.className = "col-modele";
-    nom.append(el("div", "mono", libelleModele(m.nom)), el("div", "aide", [m.parametres, m.quantification].filter(Boolean).join(" · ")));
+    const idt = el("div", "mm-identite");
+    const txt = el("div");
+    txt.append(el("div", "mono", libelleModele(m.nom)), el("div", "aide", [m.profil?.base ? t("at_base_sur", libelleModele(m.profil.base)) : null, m.parametres, m.quantification].filter(Boolean).join(" · ")));
+    if (m.profil?.description) txt.append(el("div", "aide", m.profil.description));
+    // un clic sur l'avatar : choisir une image pour ce modèle
+    const av = el("button", "avatar-bouton");
+    av.type = "button"; av.title = t("at_avatar_choisir"); av.setAttribute("aria-label", `${t("at_avatar_choisir")} : ${m.nom}`);
+    av.append(avatarModele(m.nom));
+    av.addEventListener("click", () => {
+      const fi = el("input"); fi.type = "file"; fi.accept = "image/*";
+      fi.addEventListener("change", async () => {
+        if (!fi.files[0]) return;
+        try {
+          const r = await poster("/api/modeles/profil", { nom: m.nom, avatar: await imageAvatar(fi.files[0]), couleur: m.profil?.couleur || null, description: m.profil?.description || "" });
+          if (!r.ok) throw new Error(await messageErreur(r));
+        } catch (err) { montrerBanniere(err.message); }
+        await chargerOllama(); pageModeles();
+      });
+      fi.click();
+    });
+    idt.append(av, txt);
+    nom.append(idt);
     if (m.modifie) nom.title = `${t("mm_installe_le")} ${dateCourte(m.modifie)}`;
     const etatC = el("td", "col-etat");
     if (charge) {
@@ -2549,7 +2742,7 @@ async function pageModeles() {
         decomptes.push([dec, new Date(charge.expire).getTime()]);
         etatC.append(dec);
       }
-    } else etatC.append(el("span", "aide", t("mm_repos")));
+    } else etatC.append(el("div", "aide", t("mm_repos")), el("div", "aide", t("mm_repos_detail")));
     const vit = el("td", "num col-vitesse");
     if (banc) { const z = el("div", "score-ligne"); z.append(el("span", null, `${f(banc.mesures.debit_tokens_s, 1)} tok/s`), anneau(banc.score.score)); vit.append(z); }
     else { const l = el("a", "lien-discret", t("non_mesure")); l.href = `#/bancs?nom=${encodeURIComponent(m.nom)}`; vit.append(l); }
@@ -2562,6 +2755,19 @@ async function pageModeles() {
       if (!r.ok) alert(await messageErreur(r));
       pageModeles();
     }));
+    else {
+      // activer : le mettre en mémoire maintenant (les autres sont libérés si « un seul à la fois »)
+      const act = bouton(t("mm_activer"), "petit", async () => {
+        act.disabled = true;
+        act.textContent = t("mm_activation");
+        const r = await poster("/api/modeles/activer", { nom: m.nom, num_ctx: etat.numCtx, garder: etat.garderCharge, un_seul: etat.unSeul });
+        if (!r.ok) alert(await messageErreur(r));
+        await chargerOllama();
+        pageModeles();
+      });
+      act.title = t("mm_activer_aide", ctxCourt(etat.numCtx));
+      acts.append(act);
+    }
     acts.append(bouton(t("mm_supprimer"), "petit danger", async () => {
       if (!(await confirmer(t("mm_confirmer", m.nom), t("mm_confirmer_texte", go(m.taille_go, 2)), t("mm_supprimer")))) return;
       const r = await poster("/api/modeles/supprimer", { nom: m.nom });
@@ -3171,7 +3377,8 @@ async function lancerComparaison(question) {
       try {
         // démarrage à froid demandé : on vide la mémoire des deux modèles avant chaque réponse
         if (c.froid) for (const n of tour.ordre) await poster("/api/modeles/decharger", { nom: n }, signal);
-        const corps = { modele: nom, num_ctx: etat.numCtx, type_kv: etat.typeKv, messages: [{ role: "user", content: question }] };
+        const corps = { modele: nom, num_ctx: etat.numCtx, type_kv: etat.typeKv, un_seul: etat.unSeul, garder: etat.garderCharge,
+          messages: [{ role: "user", content: question }] };
         if (c.temp0) corps.temperature = 0;
         const rep = await poster("/api/chat", corps, signal);
         if (!rep.ok) throw new Error(await messageErreur(rep));
@@ -3747,7 +3954,7 @@ async function pageReglages() {
   }
   const p3 = el("section", "panneau");
   p3.append(choixOutils());
-  gauche.append(p1, p2, p3, panneauVoix(), panneauEcoute());
+  gauche.append(p1, p2, panneauMemoire(), p3, panneauVoix(), panneauEcoute());
 
   const droite = el("div", "reglages-grille");
   const sante = el("section", "panneau");
@@ -3795,6 +4002,25 @@ async function pageReglages() {
   zone.replaceChildren(titrePage(t("r_titre")), grille);
   remplir(await chargerDiagnostic());
 }
+
+// combien de modèles en mémoire, et combien de temps : ce qui décide de la RAM occupée hors réponse
+function panneauMemoire() {
+  const p = el("section", "panneau");
+  const l = el("label", "cmp-option");
+  const cb = el("input");
+  cb.type = "checkbox";
+  cb.checked = etat.unSeul;
+  cb.addEventListener("change", () => { etat.unSeul = cb.checked; garder("edgefit.unseul", cb.checked ? "1" : "0"); });
+  l.append(cb, el("span", null, t("r_un_seul")));
+  const duree = el("select");
+  for (const v of ["1m", "5m", "30m"]) duree.append(new Option(dureeGarder(v), v));
+  duree.value = etat.garderCharge;
+  duree.setAttribute("aria-label", t("r_garder"));
+  duree.addEventListener("change", () => { etat.garderCharge = duree.value; garder("edgefit.garder", duree.value); });
+  p.append(el("h2", null, t("r_memoire")), l, el("p", "aide", t("r_un_seul_aide")), el("h2", null, t("r_garder")), duree, el("p", "aide", t("r_garder_aide")));
+  return p;
+}
+function dureeGarder(v) { return t("r_garder_choix", Number.parseInt(v, 10)); }
 
 function changerLangue(l) {
   etat.langue = l;

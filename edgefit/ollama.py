@@ -94,9 +94,9 @@ class ClientOllama:
             base_url=self.url, transport=transport, timeout=httpx.Timeout(10, read=None),
         )
 
-    async def _requete(self, methode, chemin, **kwargs):
+    async def _requete(self, methode, chemin, timeout=30, **kwargs):
         try:
-            r = await self._http.request(methode, chemin, timeout=30, **kwargs)
+            r = await self._http.request(methode, chemin, timeout=timeout, **kwargs)
         except httpx.TransportError as e:
             raise OllamaIndisponible(self.url) from e
         if r.status_code == 404:
@@ -149,6 +149,16 @@ class ClientOllama:
     async def decharger(self, nom):
         # keep_alive 0 : Ollama libère la mémoire du modèle tout de suite
         await self._requete("POST", "/api/generate", json={"model": nom, "keep_alive": 0, "stream": False})
+
+    async def charger(self, nom, num_ctx=None, garder=None):
+        # requête sans texte : Ollama lit le fichier du disque et le met en mémoire, sans rien générer.
+        # Lire plusieurs Go depuis une carte SD peut prendre plus d'une minute.
+        corps = {"model": nom, "stream": False}
+        if num_ctx:
+            corps["options"] = {"num_ctx": num_ctx}
+        if garder:
+            corps["keep_alive"] = garder
+        await self._requete("POST", "/api/generate", timeout=600, json=corps)
 
     async def supprimer(self, nom):
         await self._requete("DELETE", "/api/delete", json={"model": nom})

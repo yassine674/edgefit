@@ -186,3 +186,13 @@ def test_compatibilite_donne_telechargement_et_disque(connecte):
     assert d["disque_libre_go"] > 0
     installe = connecte.post("/api/compatibilite", json={"modele": "qwen2.5:0.5b"}).json()
     assert installe["telechargement_go"] == 0
+
+
+def test_sans_jeton_acces_libre():
+    # edgefit --sans-jeton : la page, l'API et le flux de métriques s'ouvrent sans cookie
+    c = TestClient(creer_app(FournisseurFactice(), OllamaFactice(pause_s=0), None, RegistreFactice(),
+                             CatalogueFactice(), intervalle_s=0.01))
+    assert c.get("/").status_code == 200
+    assert c.get("/api/metriques").status_code == 200
+    with c.websocket_connect("/ws/metriques", headers={"origin": "http://testserver"}) as ws:
+        assert ws.receive_json()

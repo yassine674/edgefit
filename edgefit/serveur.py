@@ -48,6 +48,11 @@ class DemandeTelechargement(BaseModel):
     nom: NomModele
 
 
+# avatar : petite image carrée préparée par la page (128 px), en « data: » ; rien d'autre n'est accepté
+Avatar = Annotated[str, Field(max_length=120_000, pattern=r"^data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$")]
+Couleur = Annotated[str, Field(pattern=r"^#[0-9a-fA-F]{6}$")]
+
+
 class DemandeCreation(BaseModel):
     nom: NomModele                      # nom du modèle fabriqué
     base: NomModele                     # modèle de départ (installé, ou téléchargé d'abord)
@@ -55,15 +60,28 @@ class DemandeCreation(BaseModel):
     parametres: dict[str, float | int | None] = Field(default={}, max_length=20)  # vérifiés par atelier.py
     quantifier: Literal[atelier.QUANTIFIABLES] | None = None
     remplacer: bool = False
+    # identité du modèle : gardée par edgefit (Ollama ne sait pas stocker une image ou une description)
+    avatar: Avatar | None = None
+    couleur: Couleur | None = None
+    description: str = Field(default="", max_length=300)
+    type_kv: str = Field(default="f16", max_length=8)  # noté dans la recette (réglage du serveur, pas du modèle)
+
+
+class DemandeProfil(BaseModel):
+    nom: NomModele
+    avatar: Avatar | None = None
+    couleur: Couleur | None = None
+    description: str = Field(default="", max_length=300)
 
 
 # image jointe : base64 brut (sans « data:image/...; »), au plus ≈ 6 Mo ; la page les réduit à 1024 px
 ImageB64 = Annotated[str, Field(min_length=16, max_length=8_000_000, pattern=r"^[A-Za-z0-9+/]+={0,2}$")]
 
 
-# Ollama décharge un modèle 5 min après la dernière réponse ; le recharger coûte 5 à 10 s (plus sur
-# une carte SD). Pendant une conversation, on le garde 30 min.
-GARDER_CHARGE = "30m"
+# Un modèle installé n'est qu'un fichier sur le disque : il n'occupe la mémoire que quand Ollama
+# l'a chargé. Après la dernière réponse, Ollama le garde en mémoire pendant `garder` (keep_alive)
+# pour répondre vite à la question suivante, puis le libère. Choisi dans les réglages de la page.
+Garder = Literal["1m", "5m", "30m"]
 
 
 class Message(BaseModel):
@@ -90,6 +108,16 @@ class DemandeChat(BaseModel):
     type_kv: TypeKV = "f16"  # réglage déclaré du serveur : sert à l'estimation enregistrée pour la calibration
     # outils cochés par l'utilisateur ; un nom hors de la liste d'edgefit est refusé (422)
     outils: list[NomOutil] = Field(default=[], max_length=10)
+    # un seul modèle en mémoire : avant de répondre, les autres modèles chargés sont libérés
+    un_seul: bool = True
+    garder: Garder = "5m"
+
+
+class DemandeActivation(BaseModel):
+    nom: NomModele
+    num_ctx: Contexte = 4096
+    garder: Garder = "5m"
+    un_seul: bool = True
 
 
 class DemandeModele(BaseModel):
@@ -260,6 +288,8 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
 
     @app.middleware("http")
     async def verifier_acces(request: Request, call_next):
+        if jeton is None:  # lancé avec --sans-jeton : accès libre à qui joint la carte
+            return await call_next(request)
         propose = request.query_params.get("token")
         if propose is not None:
             if not jeton_valide(propose, jeton):
@@ -348,7 +378,8 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
             exacts = await asyncio.wait_for(asyncio.gather(*(registre.nom_exact(m["nom"], m.get("empreinte")) for m in liste)), 4)
         except (asyncio.TimeoutError, RegistreErreur):
             exacts = [None] * len(liste)
-        return [{**m, "nom_exact": e} for m, e in zip(liste, exacts)]
+        profils = await asyncio.to_thread(stockage.lire_profils)
+        return [{**m, "nom_exact": e, "profil": profils.get(m["nom"])} for m, e in zip(liste, exacts)]
 
     # nom en paramètre de requête : les noms Ollama contiennent "/" et ":"
     @app.get("/api/modeles/capacites")
@@ -408,6 +439,10 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
             historique = list(envoyes)
             releveur = None
             try:
+                if demande.un_seul:
+                    liberes = await liberer_autres(demande.modele)
+                    if liberes:
+                        yield {"type": "liberes", "noms": liberes}
                 releveur = await Releveur(fournisseur).demarrer()  # puissance de la carte pendant la réponse
                 if sans_outils:
                     yield {"type": "outils_indisponibles"}
@@ -417,7 +452,7 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
                     definitions = boite.definitions(autorises) if tour < outils.MAX_TOURS else None
                     appels, texte_tour = [], []
                     async for evt in _avec_memoire_chargee(ollama, demande.modele,
-                                                           ollama.discuter(demande.modele, historique, options, definitions, GARDER_CHARGE)):
+                                                           ollama.discuter(demande.modele, historique, options, definitions, demande.garder)):
                         if evt["type"] == "appels":
                             appels += evt["appels"]
                             continue
@@ -529,6 +564,30 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
         return [{**m, "taille_go": m["taille"] / GO, "occupe": occupation.flux.get(m["nom"], 0) > 0}
                 for m in await _charges(ollama)]
 
+    async def liberer_autres(nom):
+        """Libère la mémoire de tous les modèles chargés sauf `nom` (ceux en cours d'utilisation restent)."""
+        liberes = []
+        for c in await _charges(ollama):
+            if c["nom"] != nom and not occupation.flux.get(c["nom"]) and occupation.banc != c["nom"]:
+                await ollama.decharger(c["nom"])
+                liberes.append(c["nom"])
+        return liberes
+
+    @app.post("/api/modeles/activer")
+    async def activer(demande: DemandeActivation):
+        # « activer » = mettre ce modèle en mémoire maintenant (et, par défaut, libérer les autres)
+        if occupation.banc:
+            raise HTTPException(409, {"code": "banc_en_cours", "message": f"banc d'essai en cours ({occupation.banc})"})
+        try:
+            liberes = await liberer_autres(demande.nom) if demande.un_seul else []
+            await ollama.charger(demande.nom, demande.num_ctx, demande.garder)
+        except ModeleInconnu as e:
+            raise HTTPException(404, {"code": "introuvable", "message": str(e)})
+        except OllamaIndisponible:
+            raise HTTPException(503, {"code": "ollama", "message": _message_indisponible(ollama)})
+        charge = next((c for c in await _charges(ollama) if c["nom"] == demande.nom), None)
+        return {"ok": True, "liberes": liberes, "taille_go": charge["taille"] / GO if charge else None}
+
     @app.post("/api/modeles/decharger")
     async def decharger(demande: DemandeModele):
         if occupation.flux.get(demande.nom):
@@ -543,6 +602,7 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
         try:
             await ollama.decharger(demande.nom)
             await ollama.supprimer(demande.nom)
+            await asyncio.to_thread(stockage.supprimer_profil, demande.nom)
         except ModeleInconnu as e:
             raise HTTPException(404, {"code": "introuvable", "message": str(e)})
         return {"ok": True}
@@ -747,6 +807,14 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
                      telechargement_go=0 if source == "installé" else infos.get("telechargement_octets", infos["taille_octets"]) / GO)
         return etude
 
+    @app.post("/api/modeles/profil")
+    async def profil_modele(demande: DemandeProfil):
+        # avatar et description d'un modèle installé, quel qu'il soit (pas seulement ceux de l'atelier)
+        if demande.nom not in {m["nom"] for m in await installes()}:
+            raise HTTPException(404, {"code": "introuvable", "message": "modèle non installé"})
+        await asyncio.to_thread(stockage.ecrire_profil, demande.nom, demande.avatar, demande.couleur, demande.description.strip())
+        return {"ok": True}
+
     @app.post("/api/modeles/creer")
     async def creer_modele(demande: DemandeCreation):
         try:
@@ -770,8 +838,15 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
                     if evt["type"] == "erreur":
                         return
             async for evt in ollama.creer(demande.nom, demande.base, demande.systeme, parametres, demande.quantifier):
-                yield {**evt, "phase": "creation"} if evt["type"] != "fin" else {"type": "fin", "nom": cible if cible in {
-                    m["nom"] for m in await installes()} else demande.nom}
+                if evt["type"] != "fin":
+                    yield {**evt, "phase": "creation"}
+                    continue
+                final = cible if cible in {m["nom"] for m in await installes()} else demande.nom
+                recette = {"parametres": parametres, "quantifier": demande.quantifier, "type_kv": demande.type_kv,
+                           "instructions": bool(demande.systeme.strip())}
+                await asyncio.to_thread(stockage.ecrire_profil, final, demande.avatar, demande.couleur,
+                                        demande.description.strip(), demande.base, recette)
+                yield {"type": "fin", "nom": final}
         return _ndjson(ollama, etapes())
 
     @app.post("/api/compatibilite")
@@ -911,7 +986,7 @@ def creer_app(fournisseur, ollama, jeton, registre=None, catalogue=None, interva
     @app.websocket("/ws/metriques")
     async def flux_metriques(ws: WebSocket):
         if not (origine_autorisee(ws.headers.get("origin"), ws.headers.get("host"))
-                and jeton_valide(ws.cookies.get(NOM_COOKIE), jeton)):
+                and (jeton is None or jeton_valide(ws.cookies.get(NOM_COOKIE), jeton))):
             await ws.close(code=1008)
             return
         await ws.accept()

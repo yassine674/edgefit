@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -32,6 +33,31 @@ def ip_locale():
             return s.getsockname()[0]
         except OSError:
             return "127.0.0.1"
+
+
+def nom_tailscale():
+    # nom de la carte sur Tailscale (ex. "nano") : il ne change pas, même si l'adresse IP change.
+    # None si Tailscale n'est pas installé ou pas connecté
+    if not shutil.which("tailscale"):
+        return None
+    try:
+        sortie = subprocess.run(["tailscale", "status", "--json"], capture_output=True, text=True, timeout=5)
+        moi = json.loads(sortie.stdout)
+    except (subprocess.SubprocessError, ValueError, OSError):
+        return None
+    if moi.get("BackendState") != "Running":
+        return None
+    nom = (moi.get("Self") or {}).get("DNSName", "").split(".")[0]
+    return nom or None
+
+
+def port_libre(hote, port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((hote, port))
+            return True
+        except OSError:
+            return False
 
 
 def etat_ollama(url):
@@ -84,6 +110,9 @@ def main():
     parser.add_argument("--https", action="store_true",
                         help="servir en https (certificat auto-signé) : nécessaire pour le micro depuis un téléphone")
     parser.add_argument("--fake", action="store_true", help="métriques et Ollama simulés, pour développer sans Jetson ni Ollama")
+    parser.add_argument("--sans-jeton", action="store_true",
+                        help="pas de jeton dans l'adresse : toute machine qui joint la carte ouvre l'appli "
+                             "(à réserver à un réseau privé, par exemple Tailscale)")
     args = parser.parse_args()
     if args.commande == "diagnostic":
         from .diagnostic import lancer
@@ -100,7 +129,10 @@ def main():
         os.environ["EDGEFIT_DB"] = str(Path(tempfile.mkdtemp(prefix="edgefit-fake-")) / "edgefit.db")
     fournisseur = detecter_fournisseur(fake=args.fake)
     ollama = OllamaFactice() if args.fake else ClientOllama(args.ollama)
-    jeton = nouveau_jeton()
+    if not port_libre(args.hote, args.port):
+        raise SystemExit(f"Le port {args.port} est déjà utilisé : edgefit tourne sans doute déjà "
+                         f"(son adresse : edgefit adresse). Sinon, choisissez un autre port avec --port.")
+    jeton = None if args.sans_jeton else nouveau_jeton()
     app = creer_app(fournisseur, ollama, jeton,
                     RegistreFactice() if args.fake else Registre(),
                     CatalogueFactice() if args.fake else Catalogue(),
@@ -112,15 +144,24 @@ def main():
     print("Ollama simulé (--fake)" if args.fake else etat_ollama(args.ollama))
     ip = ip_locale()
     tls = certificat(ip) if args.https else None
-    adresse = f"{'https' if tls else 'http'}://{ip}:{args.port}/?token={jeton}"
+    schema = "https" if tls else "http"
+    suffixe = "" if jeton is None else f"/?token={jeton}"
+    nom = nom_tailscale()
+    adresses = ([f"{schema}://{nom}:{args.port}{suffixe}"] if nom else []) + [f"{schema}://{ip}:{args.port}{suffixe}"]
     if not args.fake:  # le mode simulé ne remplace pas l'adresse du vrai serveur
-        ecrire_adresse(adresse)
-    print(f"Depuis votre PC, ouvrez : {adresse}")
+        ecrire_adresse("\n".join(adresses))
+    if nom:
+        print(f"Depuis votre PC, de n'importe où (Tailscale) : {adresses[0]}")
+        print(f"Sur le même réseau local : {adresses[1]}")
+    else:
+        print(f"Depuis votre PC, ouvrez : {adresses[0]}")
     print("(cette adresse se réaffiche avec : edgefit adresse)")
+    if jeton is None:
+        print("(sans jeton : toute machine qui joint la carte ouvre l'appli)")
     # flush : sans terminal (journal systemd, nohup), Python retarde l'affichage
     # et l'adresse avec le jeton n'apparaîtrait qu'à l'arrêt du serveur
     if tls:
         print("(certificat auto-signé : le navigateur affiche un avertissement la première fois, acceptez-le)")
-    print("(nouveau jeton à chaque démarrage ; Ctrl+C pour arrêter)", flush=True)
+    print("(Ctrl+C pour arrêter)" if jeton is None else "(nouveau jeton à chaque démarrage ; Ctrl+C pour arrêter)", flush=True)
     uvicorn.run(app, host=args.hote, port=args.port, log_level="warning",
                 **({"ssl_certfile": str(tls[0]), "ssl_keyfile": str(tls[1])} if tls else {}))
