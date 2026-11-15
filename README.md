@@ -48,6 +48,9 @@ curl -fsSL https://raw.githubusercontent.com/yassine674/edgefit/main/install.sh 
 | Option | Effet |
 |---|---|
 | `--service` | démarre edgefit automatiquement (service systemd de l'utilisateur) |
+| `--sans-jeton` | avec `--service` : adresse sans jeton (réseau privé seulement, par exemple Tailscale) |
+| `--gpu` | compile le moteur GPU Vulkan d'Ollama sans poser la question (Jetson JetPack 4, voir plus bas) |
+| `--sans-gpu` | ne le propose pas |
 | `--sans-ollama` | ne propose pas d'installer Ollama |
 | `--version v0.1.0` | installe une version précise (tag ou branche) |
 | `--oui` | répond oui aux questions |
@@ -62,6 +65,17 @@ edgefit diagnostic   # vérifie Python, JetPack, tegrastats, Ollama, GPU, disque
 ```
 
 Mise à jour : relancer la commande d'installation (ou `uv tool upgrade edgefit`). Désinstallation : `uv tool uninstall edgefit`.
+
+## GPU d'une Jetson JetPack 4 (Jetson Nano)
+
+NVIDIA a arrêté la Jetson Nano à JetPack 4.6 (CUDA 10.2) ; Ollama n'a pas de moteur CUDA pour cette version, il tourne donc sur le CPU. Le GPU de la Nano gère en revanche Vulkan 1.2. Ollama ne livre son moteur Vulkan que pour les PC x86 : sur une Jetson JetPack 4, l'installateur **propose de le compiler** sur la carte, depuis les sources officielles d'Ollama et à sa version exacte (recette `vulkan` de `llama/server`). Il ne produit que `lib/ollama/vulkan/libggml-vulkan.so`, qu'Ollama charge tout seul, et active Vulkan dans le service ollama (`OLLAMA_VULKAN=1`, `OLLAMA_IGPU_ENABLE=1`, le GPU d'une Jetson étant intégré). Durée : 1 à 2 h sur une Nano (dont glslc, le compilateur des programmes GPU, absent d'Ubuntu 20.04) ; dossier de compilation `~/.cache/edgefit/gpu`, supprimable ensuite.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yassine674/edgefit/main/install.sh | sh -s -- --gpu
+journalctl -u ollama -b --no-pager | grep "inference compute"    # doit citer Vulkan
+```
+
+Après une mise à jour d'Ollama, relancer l'installateur : il recompile le moteur à la nouvelle version. Retour arrière : `sudo rm -r /usr/local/lib/ollama/vulkan /etc/systemd/system/ollama.service.d/edgefit-vulkan.conf && sudo systemctl daemon-reload && sudo systemctl restart ollama`. Le CPU et le GPU de la Nano partagent la même mémoire (25,6 Go/s) : la génération est limitée par cette mémoire, le gain du GPU est à mesurer avec un banc d'essai.
 
 ## GPU intégré (Intel, AMD) sur un PC
 

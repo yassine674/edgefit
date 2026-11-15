@@ -18,7 +18,7 @@ from .metriques.jetson import analyser_ligne_tegrastats
 GIO = 1024 ** 3
 
 # numéro de version L4T (Linux for Tegra) -> version de JetPack
-JETPACK = {"32": "4 (Ubuntu 18.04)", "35": "5 (Ubuntu 20.04)", "36": "6 (Ubuntu 22.04)", "38": "7 (Ubuntu 24.04)"}
+JETPACK = {"32": "4", "35": "5 (Ubuntu 20.04)", "36": "6 (Ubuntu 22.04)", "38": "7 (Ubuntu 24.04)"}
 
 
 def version_l4t(texte):
@@ -40,6 +40,18 @@ def _commande(args, delai=5):
         return None
 
 
+def moteur_vulkan_ollama(exe=None):
+    """Moteur GPU Vulkan d'Ollama (lib/ollama/vulkan/libggml-vulkan.so) s'il est installé, sinon None.
+    Ollama ne le livre pas pour ARM : sur une Jetson JetPack 4 (CUDA 10.2, trop ancien pour Ollama),
+    l'installateur d'edgefit le compile depuis les sources d'Ollama (option --gpu)."""
+    exe = exe or shutil.which("ollama")
+    if not exe:
+        return None
+    dossier = Path(exe).resolve().parent.parent / "lib" / "ollama" / "vulkan"
+    trouves = sorted(dossier.glob("libggml-vulkan*.so*"))
+    return trouves[0] if trouves else None
+
+
 def verifier_python():
     v = sys.version_info
     return [("OK", f"Python {v.major}.{v.minor}")]
@@ -53,9 +65,14 @@ def verifier_carte():
         l4t = version_l4t(release.read_text(errors="ignore"))
         if l4t:
             jetpack = JETPACK.get(l4t[0], "inconnue")
-            niveau = "ATTENTION" if l4t[0] == "32" else "OK"
-            resultats.append((niveau, f"L4T R{l4t[0]}.{l4t[1]}, JetPack {jetpack}"
-                              + (" : trop ancien pour qu'Ollama utilise le GPU" if niveau == "ATTENTION" else "")))
+            texte = f"L4T R{l4t[0]}.{l4t[1]}, JetPack {jetpack}"
+            if l4t[0] != "32":
+                resultats.append(("OK", texte))
+            elif moteur_vulkan_ollama():
+                resultats.append(("OK", texte + " : GPU utilisé par Vulkan (moteur compilé par l'installateur d'edgefit)"))
+            else:
+                resultats.append(("ATTENTION", texte + " : CUDA trop ancien pour Ollama. Pour utiliser le GPU par Vulkan, "
+                                  "relancez l'installateur avec --gpu"))
         mode = mode_energie(_commande(["nvpmodel", "-q"]))
         if mode:
             resultats.append(("INFO", f"Mode d'énergie : {mode} (il change les tokens/s ; liste : sudo nvpmodel -p --verbose)"))
@@ -200,8 +217,12 @@ def etat_carte(url_ollama):
         l4t = version_l4t(release.read_text(errors="ignore"))
         if l4t:
             faits["l4t"], faits["jetpack"] = f"R{l4t[0]}.{l4t[1]}", JETPACK.get(l4t[0])
-            ajout("ATTENTION" if l4t[0] == "32" else "OK", "jetpack_ancien" if l4t[0] == "32" else "jetpack",
-                  l4t=faits["l4t"], jetpack=faits["jetpack"])
+            if l4t[0] != "32":
+                ajout("OK", "jetpack", l4t=faits["l4t"], jetpack=faits["jetpack"])
+            elif moteur_vulkan_ollama():
+                ajout("OK", "jetpack_vulkan", l4t=faits["l4t"], jetpack=faits["jetpack"])
+            else:
+                ajout("ATTENTION", "jetpack_ancien", l4t=faits["l4t"], jetpack=faits["jetpack"])
         faits["mode"] = mode_energie(_commande(["nvpmodel", "-q"]))
     carte_min = (carte or "").lower()
     if "jetson" in carte_min:

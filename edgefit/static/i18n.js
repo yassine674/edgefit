@@ -1005,7 +1005,8 @@ Object.assign(TEXTES.en, {
 Object.assign(TEXTES.fr, {
   diag: {
     jetpack: (p) => `L4T ${p.l4t}, JetPack ${p.jetpack}`,
-    jetpack_ancien: (p) => `L4T ${p.l4t} (JetPack ${p.jetpack}) : trop ancien pour qu'Ollama utilise le GPU`,
+    jetpack_ancien: (p) => `L4T ${p.l4t} (JetPack ${p.jetpack}) : CUDA trop ancien pour Ollama. Pour utiliser le GPU par Vulkan, relancez l'installateur avec --gpu`,
+    jetpack_vulkan: (p) => `L4T ${p.l4t} (JetPack ${p.jetpack}) : GPU utilisé par Vulkan`,
     tegrastats: () => "tegrastats disponible : GPU, températures et puissance lus",
     tegrastats_absent: () => "tegrastats introuvable : GPU, températures et puissance non lus",
     pi_ok: () => "Alimentation du Raspberry Pi correcte",
@@ -1082,7 +1083,8 @@ Object.assign(TEXTES.fr, {
 Object.assign(TEXTES.en, {
   diag: {
     jetpack: (p) => `L4T ${p.l4t}, JetPack ${p.jetpack}`,
-    jetpack_ancien: (p) => `L4T ${p.l4t} (JetPack ${p.jetpack}): too old for Ollama to use the GPU`,
+    jetpack_ancien: (p) => `L4T ${p.l4t} (JetPack ${p.jetpack}): CUDA too old for Ollama. To use the GPU through Vulkan, rerun the installer with --gpu`,
+    jetpack_vulkan: (p) => `L4T ${p.l4t} (JetPack ${p.jetpack}): GPU used through Vulkan`,
     tegrastats: () => "tegrastats available: GPU, temperatures and power are read",
     tegrastats_absent: () => "tegrastats not found: GPU, temperatures and power are not read",
     pi_ok: () => "Raspberry Pi power supply is fine",
